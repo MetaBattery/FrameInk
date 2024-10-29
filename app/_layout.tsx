@@ -1,26 +1,24 @@
 // app/_layout.tsx
 
-import { Stack } from 'expo-router';
+import { Slot } from 'expo-router';
+import React from 'react';
 import { PaperProvider } from 'react-native-paper';
 import { ThemeProvider, ThemeContext } from '../contexts/ThemeContext';
-import React, { useContext } from 'react';
 
 export default function RootLayout() {
   return (
     <ThemeProvider>
-      <Main />
+      <MainLayout />
     </ThemeProvider>
   );
 }
 
-function Main() {
-  const { theme } = useContext(ThemeContext);
+function MainLayout() {
+  const { theme } = React.useContext(ThemeContext);
 
   return (
     <PaperProvider theme={theme}>
-      <Stack>
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-      </Stack>
+      <Slot />
     </PaperProvider>
   );
 }

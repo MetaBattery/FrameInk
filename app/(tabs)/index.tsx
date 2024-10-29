@@ -1,4 +1,4 @@
-// app/(tabs)/index.tsx
+// app/index.tsx
 
 import React, { useState } from 'react';
 import {
@@ -8,6 +8,7 @@ import {
   ScrollView,
   TextInput,
   Alert,
+  SafeAreaView,
 } from 'react-native';
 import {
   Button,
@@ -27,10 +28,9 @@ import {
   ORIENTATIONS,
 } from '../../services/imageProcessor';
 import ImageCropper from '../../components/ImageCropper';
-import { Stack } from 'expo-router';
 import { logger } from '../../services/logger';
 
-export default function TabOneScreen() {
+export default function HomeScreen() {
   const { colors } = useTheme();
   const styles = makeStyles(colors);
 
@@ -64,7 +64,6 @@ export default function TabOneScreen() {
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsEditing: false,
         quality: 1,
-        aspect: [1, 1],
       });
 
       logger.debug('ImagePicker', 'Picker result', result);
@@ -107,7 +106,6 @@ export default function TabOneScreen() {
       const result = await ImagePicker.launchCameraAsync({
         allowsEditing: false,
         quality: 1,
-        aspect: [1, 1],
       });
 
       logger.debug('ImagePicker', 'Camera result', result);
@@ -228,122 +226,126 @@ export default function TabOneScreen() {
   };
 
   return (
-    <ScrollView style={styles.container}>
-      <Stack.Screen options={{ title: 'FrameInk' }} />
+    <SafeAreaView style={styles.container}>
       <Surface style={styles.surface}>
-        {!selectedImage && (
-          <View style={styles.buttonContainer}>
-            <Button mode="contained" onPress={pickImage} style={styles.button}>
-              Select Image
-            </Button>
-
-            <Button mode="contained" onPress={takePhoto} style={styles.button}>
-              Take Photo
-            </Button>
-          </View>
+        {processing && (
+          <ActivityIndicator animating={true} size="large" style={styles.loader} />
         )}
 
-        {processing && <ActivityIndicator animating={true} size="large" style={styles.loader} />}
+        <ScrollView contentContainerStyle={styles.scrollContainer}>
+          {selectedImage && !isCropping && !croppedImage && (
+            <View style={styles.imageContainer}>
+              <Image
+                source={{ uri: selectedImage }}
+                style={styles.image}
+                resizeMode="contain"
+              />
+              <Button
+                mode="contained"
+                onPress={() => setIsCropping(true)}
+                style={styles.button}
+              >
+                Crop Image
+              </Button>
+              <Button
+                mode="outlined"
+                onPress={() => {
+                  setSelectedImage(null);
+                  setCroppedImage(null);
+                  setProcessedResult(null);
+                }}
+                style={styles.button}
+              >
+                Select Different Image
+              </Button>
+            </View>
+          )}
 
-        {selectedImage && !isCropping && !croppedImage && (
-          <View style={styles.imageContainer}>
-            <Image
-              source={{ uri: selectedImage }}
-              style={styles.image}
-              resizeMode="contain"
-            />
-            <Button
-              mode="contained"
-              onPress={() => setIsCropping(true)}
-              style={styles.button}
-            >
-              Crop Image
-            </Button>
-            <Button
-              mode="outlined"
-              onPress={() => {
-                setSelectedImage(null);
-                setCroppedImage(null);
-                setProcessedResult(null);
-              }}
-              style={styles.button}
-            >
-              Select Different Image
-            </Button>
-          </View>
-        )}
+          {selectedImage && isCropping && (
+            <View style={styles.cropperContainer}>
+              <ImageCropper imageUri={selectedImage} onCropComplete={handleCropComplete} />
+            </View>
+          )}
 
-        {selectedImage && isCropping && (
-          <View style={styles.cropperContainer}>
-            <ImageCropper imageUri={selectedImage} onCropComplete={handleCropComplete} />
-          </View>
-        )}
+          {croppedImage && !processedResult && (
+            <View style={styles.imageContainer}>
+              <Text style={styles.imageInfo}>
+                Orientation: {selectedOrientation}
+                {'\n'}Resolution: {croppedImage.width}x{croppedImage.height}
+              </Text>
+              <Image
+                source={{ uri: croppedImage.uri }}
+                style={styles.image}
+                resizeMode="contain"
+              />
+              <Button
+                mode="contained"
+                onPress={handleProcessImage}
+                style={styles.button}
+              >
+                Convert to 4-bit Grayscale
+              </Button>
+              <Button
+                mode="outlined"
+                onPress={() => {
+                  setCroppedImage(null);
+                  setIsCropping(true);
+                }}
+                style={styles.button}
+              >
+                Crop Again
+              </Button>
+            </View>
+          )}
 
-        {croppedImage && !processedResult && (
-          <View style={styles.imageContainer}>
-            <Text style={styles.imageInfo}>
-              Orientation: {selectedOrientation}
-              {'\n'}Resolution: {croppedImage.width}x{croppedImage.height}
-            </Text>
-            <Image
-              source={{ uri: croppedImage.uri }}
-              style={styles.image}
-              resizeMode="contain"
-            />
-            <Button
-              mode="contained"
-              onPress={handleProcessImage}
-              style={styles.button}
-            >
-              Convert to 4-bit Grayscale
-            </Button>
-            <Button
-              mode="outlined"
-              onPress={() => {
-                setCroppedImage(null);
-                setIsCropping(true);
-              }}
-              style={styles.button}
-            >
-              Crop Again
-            </Button>
-          </View>
-        )}
-
-        {processedResult && (
-          <View style={styles.imageContainer}>
-            <Text style={styles.imageInfo}>
-              Orientation: {selectedOrientation}
-              {'\n'}Resolution: {processedResult.width}x{processedResult.height}
-            </Text>
-            <Image
-              source={{ uri: processedResult.previewUri }}
-              style={styles.image}
-              resizeMode="contain"
-            />
-            <Button
-              mode="contained"
-              onPress={() => setShowSaveModal(true)}
-              style={styles.button}
-            >
-              Save Processed Image
-            </Button>
-            <Button
-              mode="outlined"
-              onPress={() => {
-                setProcessedResult(null);
-                setCroppedImage(null);
-                setIsCropping(true);
-              }}
-              style={styles.button}
-            >
-              Process Again
-            </Button>
-          </View>
-        )}
+          {processedResult && (
+            <View style={styles.imageContainer}>
+              <Text style={styles.imageInfo}>
+                Orientation: {selectedOrientation}
+                {'\n'}Resolution: {processedResult.width}x{processedResult.height}
+              </Text>
+              <Image
+                source={{ uri: processedResult.previewUri }}
+                style={styles.image}
+                resizeMode="contain"
+              />
+              <Button
+                mode="contained"
+                onPress={() => setShowSaveModal(true)}
+                style={styles.button}
+              >
+                Save Processed Image
+              </Button>
+              <Button
+                mode="outlined"
+                onPress={() => {
+                  setProcessedResult(null);
+                  setCroppedImage(null);
+                  setIsCropping(true);
+                }}
+                style={styles.button}
+              >
+                Process Again
+              </Button>
+            </View>
+          )}
+        </ScrollView>
       </Surface>
+
+      {!selectedImage && !processing && (
+        <View style={styles.buttonContainer}>
+          <Button mode="contained" onPress={pickImage} style={styles.actionButton}>
+            Select Image
+          </Button>
+
+          <Button mode="contained" onPress={takePhoto} style={styles.actionButton}>
+            Take Photo
+          </Button>
+        </View>
+      )}
+
       <SaveModal />
-    </ScrollView>
+    </SafeAreaView>
   );
 }
 
@@ -354,19 +356,31 @@ const makeStyles = (colors: any) =>
       backgroundColor: colors.background,
     },
     surface: {
-      margin: 16,
-      padding: 16,
+      flex: 1,
+      marginHorizontal: 16,
+      marginTop: 16,
       elevation: 4,
       borderRadius: 8,
       backgroundColor: colors.surface,
     },
+    scrollContainer: {
+      padding: 16,
+      flexGrow: 1,
+    },
     buttonContainer: {
       flexDirection: 'row',
       justifyContent: 'space-around',
-      marginBottom: 20,
+      paddingHorizontal: 16,
+      paddingVertical: 16,
+      backgroundColor: colors.surface,
+    },
+    actionButton: {
+      flex: 1,
+      marginHorizontal: 8,
     },
     button: {
-      margin: 8,
+      marginVertical: 8,
+      width: '100%',
     },
     imageContainer: {
       alignItems: 'center',

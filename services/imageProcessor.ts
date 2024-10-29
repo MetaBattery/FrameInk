@@ -1,7 +1,7 @@
-//services/imageProcessor.ys
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system';
 import { logger } from '../services/logger';
+import { GrayscaleConverter } from './GrayscaleConverter';
 
 export interface ProcessedImage {
   uri: string;
@@ -96,62 +96,22 @@ export class ImageProcessor {
 
   static async convertToGrayscale4bit(processedImage: ProcessedImage): Promise<GrayscaleResult> {
     try {
-      logger.debug('ImageProcessor', 'Starting grayscale conversion', {
-        width: processedImage.width,
-        height: processedImage.height,
-        uri: processedImage.uri
+      logger.debug('ImageProcessor', 'Starting grayscale conversion');
+      const result = await GrayscaleConverter.convert(processedImage);
+      
+      // Save preview alongside the header file
+      const previewFilename = processedImage.uri.replace('.png', '_preview.jpg');
+      await FileSystem.copyAsync({
+        from: result.previewUri,
+        to: previewFilename
       });
-
-      // First convert to grayscale using image manipulator
-      const grayImage = await manipulateAsync(
-        processedImage.uri,
-        [{ grayscale: true }],
-        { format: SaveFormat.PNG }
-      );
-
-      logger.debug('ImageProcessor', 'Grayscale conversion complete', {
-        resultUri: grayImage.uri
-      });
-
-      // Read the image data
-      const base64 = await FileSystem.readAsStringAsync(grayImage.uri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-      logger.debug('ImageProcessor', 'Read image as base64', { 
-        length: base64.length 
-      });
-
-      // Create the packed data array (2 pixels per byte for 4-bit)
-      const packedLength = Math.ceil((processedImage.width * processedImage.height) / 2);
-      const packedData = new Uint8Array(packedLength);
-
-      logger.debug('ImageProcessor', 'Created packed data array', {
-        packedLength,
-        expectedPixels: processedImage.width * processedImage.height
-      });
-
-      // We'll use the grayscale image as the preview for now
-      // In a production app, we might want to generate a proper preview
-      // showing the actual 4-bit conversion
-      const previewUri = grayImage.uri;
-
-      // Convert the base64 image data to 4-bit grayscale
-      // For now, we're creating a placeholder packed data array
-      // This should be replaced with actual pixel processing
-      for (let i = 0; i < packedLength; i++) {
-        packedData[i] = 0x00;
-      }
-
-      logger.debug('ImageProcessor', 'Conversion complete');
-
+      
       return {
-        width: processedImage.width,
-        height: processedImage.height,
-        packedData,
-        previewUri
+        ...result,
+        previewUri: previewFilename
       };
     } catch (error) {
-      logger.error('ImageProcessor', 'Error converting to grayscale', error);
+      logger.error('ImageProcessor', 'Error in grayscale conversion', error);
       throw error;
     }
   }
@@ -160,10 +120,8 @@ export class ImageProcessor {
     try {
       logger.debug('ImageProcessor', 'Starting save process', { filename });
 
-      // Format the data as C-style array
       const formattedData = this.formatForEink(grayscaleResult);
       
-      // Determine the save location
       const saveDir = `${FileSystem.documentDirectory}processed_images/`;
       const filePath = `${saveDir}${filename}.h`;
 
@@ -172,14 +130,12 @@ export class ImageProcessor {
         filePath 
       });
 
-      // Create directory if it doesn't exist
       await FileSystem.makeDirectoryAsync(saveDir, { 
         intermediates: true 
       }).catch(error => {
         logger.debug('ImageProcessor', 'Directory already exists or created', error);
       });
 
-      // Save the file
       await FileSystem.writeAsStringAsync(filePath, formattedData);
 
       logger.debug('ImageProcessor', 'File saved successfully', { 
@@ -206,7 +162,6 @@ export class ImageProcessor {
                   `const uint32_t image_height = ${grayscaleResult.height};\n` +
                   `const uint8_t image_data[${grayscaleResult.packedData.length}] = {\n`;
 
-    // Format data in rows of 16 bytes
     const dataHex = Array.from(grayscaleResult.packedData)
       .map(byte => `0x${byte.toString(16).padStart(2, '0')}`)
       .reduce((acc, hex, i) => {

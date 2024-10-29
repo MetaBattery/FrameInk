@@ -1,18 +1,24 @@
-// components/ImageCropper.tsx
-
 import React, { useRef, useState, useEffect } from 'react';
 import {
   StyleSheet,
   View,
   PanResponder,
   Animated,
-  Dimensions,
   Image,
   LayoutRectangle,
+  Dimensions,
 } from 'react-native';
 import { Button, useTheme } from 'react-native-paper';
 import { Orientation, ORIENTATIONS } from '../services/imageProcessor';
 import { logger } from '../services/logger';
+import { 
+  calculateImageDimensions, 
+  calculateCropData, 
+  getCropFrameDimensions,
+  calculateZoomLimits,
+  PADDING,
+  BUTTON_BAR_HEIGHT 
+} from './ImageCropperUtils';
 
 interface ImageCropperProps {
   imageUri: string;
@@ -24,10 +30,6 @@ interface ImageCropperProps {
   }, orientation: Orientation) => void;
 }
 
-// Move PADDING and CONTROL_HEIGHT outside the component function
-const PADDING = 16;
-const CONTROL_HEIGHT = 140;
-
 export default function ImageCropper({ imageUri, onCropComplete }: ImageCropperProps) {
   const { colors } = useTheme();
   const [imageSize, setImageSize] = useState({ width: 0, height: 0 });
@@ -37,42 +39,125 @@ export default function ImageCropper({ imageUri, onCropComplete }: ImageCropperP
     width: 0,
     height: 0,
   });
+  const [zoomLimits, setZoomLimits] = useState({ minScale: 1, maxScale: 3 });
+  
   const pan = useRef(new Animated.ValueXY()).current;
+  const scale = useRef(new Animated.Value(1)).current;
+  let lastScale = 1;
+  let lastDistance = 0;
+  let lastTap = 0;
+
+  useEffect(() => {
+    scale.addListener(({ value }) => {
+      console.log('Scale value:', value, 'Limits:', zoomLimits);
+    });
+    return () => scale.removeAllListeners();
+  }, [scale, zoomLimits]);
+
+  const resetTransform = () => {
+    const { centerX, centerY } = calculateImageDimensions(
+      imageSize.width,
+      imageSize.height,
+      containerSize,
+      orientation
+    );
+
+    Animated.parallel([
+      Animated.spring(scale, {
+        toValue: zoomLimits.minScale,
+        useNativeDriver: false,
+      }),
+      Animated.spring(pan, {
+        toValue: { x: centerX, y: centerY },
+        useNativeDriver: false,
+      }),
+    ]).start();
+    lastScale = zoomLimits.minScale;
+  };
 
   useEffect(() => {
     if (containerSize.width > 0 && containerSize.height > 0) {
       Image.getSize(
         imageUri,
         (width, height) => {
-          const widthRatio = containerSize.width / width;
-          const heightRatio = containerSize.height / height;
-          const scale = Math.min(widthRatio, heightRatio);
+          const { newWidth, newHeight, centerX, centerY } = calculateImageDimensions(
+            width,
+            height,
+            containerSize,
+            orientation
+          );
 
-          setImageSize({
-            width: width * scale,
-            height: height * scale,
-          });
+          setImageSize({ width: newWidth, height: newHeight });
+          
+          const cropFrame = getCropFrameDimensions(containerSize, orientation, PADDING);
+          const { minScale, maxScale } = calculateZoomLimits(
+            { width: newWidth, height: newHeight },
+            cropFrame
+          );
+          setZoomLimits({ minScale, maxScale });
+
+          // Set initial position and scale
+          pan.setValue({ x: centerX, y: centerY });
+          scale.setValue(minScale);
+          lastScale = minScale;
         },
         (error) => logger.error('ImageCropper', 'Image load error', error)
       );
     }
-  }, [imageUri, containerSize]);
+  }, [imageUri, containerSize, orientation]);
+
+  const getDistance = (touches: any[]) => {
+    const dx = touches[0].pageX - touches[1].pageX;
+    const dy = touches[0].pageY - touches[1].pageY;
+    return Math.sqrt(dx * dx + dy * dy);
+  };
 
   const panResponder = PanResponder.create({
     onStartShouldSetPanResponder: () => true,
     onMoveShouldSetPanResponder: () => true,
-    onPanResponderGrant: () => {
+    onPanResponderGrant: (event) => {
+      // Handle double tap
+      const now = Date.now();
+      if (now - lastTap < 300) {
+        resetTransform();
+      }
+      lastTap = now;
+
       pan.setOffset({
         x: pan.x._value,
         y: pan.y._value,
       });
     },
-    onPanResponderMove: Animated.event(
-      [null, { dx: pan.x, dy: pan.y }],
-      { useNativeDriver: false }
-    ),
+    onPanResponderMove: (event, gestureState) => {
+      const touches = event.nativeEvent.touches;
+      
+      if (touches.length === 2) {
+        const currentDistance = getDistance(touches);
+        
+        if (lastDistance === 0) {
+          lastDistance = currentDistance;
+          return;
+        }
+
+        const newScale = Math.min(
+          Math.max(
+            lastScale * (currentDistance / lastDistance),
+            zoomLimits.minScale
+          ),
+          zoomLimits.maxScale
+        );
+        scale.setValue(newScale);
+      } else {
+        Animated.event(
+          [null, { dx: pan.x, dy: pan.y }],
+          { useNativeDriver: false }
+        )(event, gestureState);
+      }
+    },
     onPanResponderRelease: () => {
       pan.flattenOffset();
+      lastScale = scale._value;
+      lastDistance = 0;
     },
   });
 
@@ -80,41 +165,22 @@ export default function ImageCropper({ imageUri, onCropComplete }: ImageCropperP
     if (!frameLayout || imageSize.width === 0 || imageSize.height === 0) return;
 
     Image.getSize(imageUri, (originalWidth, originalHeight) => {
-      const scaleX = originalWidth / imageSize.width;
-      const scaleY = originalHeight / imageSize.height;
-
-      const cropData = {
-        originX: Math.max(0, -pan.x._value) * scaleX,
-        originY: Math.max(0, -pan.y._value) * scaleY,
-        width: frameLayout.width * scaleX,
-        height: frameLayout.height * scaleY,
-      };
+      const cropData = calculateCropData(
+        originalWidth,
+        originalHeight,
+        imageSize,
+        containerSize,
+        scale._value,
+        pan.x._value,
+        pan.y._value,
+        orientation
+      );
 
       onCropComplete(cropData, orientation);
     });
   };
 
-  const getCropFrameDimensions = () => {
-    if (containerSize.width === 0 || containerSize.height === 0)
-      return { width: 0, height: 0 };
-
-    const maxWidth = containerSize.width - PADDING * 2;
-
-    if (orientation === ORIENTATIONS.PORTRAIT) {
-      const aspectRatio = 540 / 960;
-      const frameWidth = maxWidth;
-      const frameHeight = frameWidth / aspectRatio;
-      return { width: frameWidth, height: frameHeight };
-    } else {
-      const aspectRatio = 960 / 540;
-      const frameWidth = maxWidth;
-      const frameHeight = frameWidth / aspectRatio;
-      return { width: frameWidth, height: frameHeight };
-    }
-  };
-
-  const cropFrameDimensions = getCropFrameDimensions();
-
+  const cropFrameDimensions = getCropFrameDimensions(containerSize, orientation, PADDING);
   const styles = makeStyles(colors);
 
   return (
@@ -132,7 +198,11 @@ export default function ImageCropper({ imageUri, onCropComplete }: ImageCropperP
               style={[
                 styles.animatedImageContainer,
                 {
-                  transform: [{ translateX: pan.x }, { translateY: pan.y }],
+                  transform: [
+                    { translateX: pan.x },
+                    { translateY: pan.y },
+                    { scale },
+                  ],
                 },
               ]}
               {...panResponder.panHandlers}
@@ -140,6 +210,7 @@ export default function ImageCropper({ imageUri, onCropComplete }: ImageCropperP
               <Image
                 source={{ uri: imageUri }}
                 style={[styles.image, { width: imageSize.width, height: imageSize.height }]}
+                resizeMode="contain"
               />
             </Animated.View>
 
@@ -153,38 +224,40 @@ export default function ImageCropper({ imageUri, onCropComplete }: ImageCropperP
                   top: (containerSize.height - cropFrameDimensions.height) / 2,
                 },
               ]}
+              pointerEvents="none"
               onLayout={(event) => setFrameLayout(event.nativeEvent.layout)}
             />
           </View>
         )}
       </View>
 
-      <View style={styles.controls}>
-        <View style={styles.buttonContainer}>
-          <Button
-            mode={orientation === ORIENTATIONS.PORTRAIT ? 'contained' : 'outlined'}
-            onPress={() => setOrientation(ORIENTATIONS.PORTRAIT)}
-            style={styles.orientationButton}
-          >
-            Portrait (540x960)
-          </Button>
-          <Button
-            mode={orientation === ORIENTATIONS.LANDSCAPE ? 'contained' : 'outlined'}
-            onPress={() => setOrientation(ORIENTATIONS.LANDSCAPE)}
-            style={styles.orientationButton}
-          >
-            Landscape (960x540)
-          </Button>
-        </View>
-        <Button mode="contained" onPress={handleCrop} style={styles.cropButton}>
-          Crop Image
+      <View style={styles.buttonContainer}>
+        <Button
+          mode={orientation === ORIENTATIONS.PORTRAIT ? 'contained' : 'outlined'}
+          onPress={() => setOrientation(ORIENTATIONS.PORTRAIT)}
+          style={styles.actionButton}
+        >
+          Portrait
+        </Button>
+        <Button
+          mode={orientation === ORIENTATIONS.LANDSCAPE ? 'contained' : 'outlined'}
+          onPress={() => setOrientation(ORIENTATIONS.LANDSCAPE)}
+          style={styles.actionButton}
+        >
+          Landscape
+        </Button>
+        <Button
+          mode="contained"
+          onPress={handleCrop}
+          style={styles.actionButton}
+        >
+          Crop
         </Button>
       </View>
     </View>
   );
 }
 
-// Now CONTROL_HEIGHT is accessible here
 const makeStyles = (colors: any) =>
   StyleSheet.create({
     container: {
@@ -194,44 +267,44 @@ const makeStyles = (colors: any) =>
     imageContainer: {
       flex: 1,
       width: '100%',
+      marginBottom: BUTTON_BAR_HEIGHT,
     },
     cropArea: {
       flex: 1,
       position: 'relative',
-      overflow: 'hidden',
     },
     animatedImageContainer: {
       position: 'absolute',
-      top: 0,
-      left: 0,
+      width: '100%',
+      height: '100%',
+      alignItems: 'center',
+      justifyContent: 'center',
     },
     image: {
-      resizeMode: 'contain',
+      width: '100%',
+      height: '100%',
     },
     cropFrame: {
       position: 'absolute',
       borderWidth: 2,
       borderColor: colors.primary,
       backgroundColor: 'transparent',
-    },
-    controls: {
-      height: CONTROL_HEIGHT,
-      backgroundColor: colors.surface,
-      padding: 16,
-      paddingBottom: 24,
-      borderTopLeftRadius: 16,
-      borderTopRightRadius: 16,
+      pointerEvents: 'none',
     },
     buttonContainer: {
+      position: 'absolute',
+      bottom: 0,
+      left: 0,
+      right: 0,
       flexDirection: 'row',
-      justifyContent: 'space-between',
-      marginBottom: 12,
+      justifyContent: 'space-around',
+      paddingHorizontal: 16,
+      paddingVertical: 16,
+      backgroundColor: colors.surface,
+      height: BUTTON_BAR_HEIGHT,
     },
-    orientationButton: {
+    actionButton: {
       flex: 1,
       marginHorizontal: 4,
-    },
-    cropButton: {
-      marginTop: 4,
     },
   });

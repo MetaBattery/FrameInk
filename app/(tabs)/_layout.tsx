@@ -1,51 +1,39 @@
-import FontAwesome from '@expo/vector-icons/FontAwesome';
+// app/(tabs)/_layout.tsx
+
 import { Tabs } from 'expo-router';
-import Colors from '../../constants/colors';
-import { useColorScheme } from 'react-native';
+import React from 'react';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 
-function TabBarIcon(props: {
-  name: React.ComponentProps<typeof FontAwesome>['name'];
-  color: string;
-}) {
-  return <FontAwesome size={28} style={{ marginBottom: -3 }} {...props} />;
-}
-
-export default function TabLayout() {
-  const colorScheme = useColorScheme();
-  
+export default function TabsLayout() {
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: Colors[colorScheme ?? 'light'].primary,
-        tabBarInactiveTintColor: 'gray',
-        tabBarStyle: {
-          backgroundColor: Colors[colorScheme ?? 'light'].surface,
-        },
-        headerStyle: {
-          backgroundColor: Colors[colorScheme ?? 'light'].surface,
-        },
-        headerTintColor: Colors[colorScheme ?? 'light'].text,
-      }}>
+        headerShown: false, // Remove the top header
+        tabBarShowLabel: false, // Hide labels under icons
+      }}
+    >
       <Tabs.Screen
-        name="index"
+        name="index" // Matches app/(tabs)/index.tsx
         options={{
-          title: 'FrameInk',
-          headerLeft: () => (
-            <FontAwesome 
-              name="home" 
-              size={24} 
-              style={{ marginLeft: 15 }}
-              color={Colors[colorScheme ?? 'light'].text}
-            />
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="home" color={color} size={size} />
           ),
-          tabBarIcon: ({ color }) => <TabBarIcon name="image" color={color} />,
         }}
       />
       <Tabs.Screen
-        name="settings"
+        name="library" // Matches app/(tabs)/library.tsx
         options={{
-          title: 'Device Settings',
-          tabBarIcon: ({ color }) => <TabBarIcon name="cog" color={color} />,
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="image" color={color} size={size} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="settings" // Matches app/(tabs)/settings.tsx
+        options={{
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="cog" color={color} size={size} />
+          ),
         }}
       />
     </Tabs>
