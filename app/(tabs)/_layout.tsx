@@ -1,38 +1,58 @@
 // app/(tabs)/_layout.tsx
 
 import { Tabs } from 'expo-router';
-import React from 'react';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useTheme } from 'react-native-paper';
+import { MaterialIcons } from '@expo/vector-icons';
 
-export default function TabsLayout() {
+export default function TabLayout() {
+  const { colors } = useTheme();
+
   return (
     <Tabs
       screenOptions={{
-        headerShown: false, // Remove the top header
-        tabBarShowLabel: false, // Hide labels under icons
-      }}
-    >
+        tabBarActiveTintColor: colors.primary,
+        tabBarInactiveTintColor: colors.disabled,
+        tabBarStyle: {
+          backgroundColor: colors.surface,
+        },
+        headerStyle: {
+          backgroundColor: colors.surface,
+        },
+        headerTintColor: colors.text,
+      }}>
       <Tabs.Screen
-        name="index" // Matches app/(tabs)/index.tsx
+        name="index"
         options={{
+          title: 'Home',
           tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="home" color={color} size={size} />
+            <MaterialIcons name="home" size={size} color={color} />
           ),
         }}
       />
       <Tabs.Screen
-        name="library" // Matches app/(tabs)/library.tsx
+        name="library"
         options={{
+          title: 'Library',
           tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="image" color={color} size={size} />
+            <MaterialIcons name="photo-library" size={size} color={color} />
           ),
         }}
       />
       <Tabs.Screen
-        name="settings" // Matches app/(tabs)/settings.tsx
+        name="frame-management"
         options={{
+          title: 'Device',
           tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="cog" color={color} size={size} />
+            <MaterialIcons name="devices" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="settings"
+        options={{
+          title: 'Settings',
+          tabBarIcon: ({ color, size }) => (
+            <MaterialIcons name="settings" size={size} color={color} />
           ),
         }}
       />

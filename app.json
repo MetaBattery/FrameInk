@@ -14,9 +14,15 @@
     },
     "ios": {
       "supportsTablet": true,
+      "bundleIdentifier": "com.yourcompany.frameink",
       "infoPlist": {
         "NSCameraUsageDescription": "This app uses the camera to capture images for e-ink display conversion.",
-        "NSPhotoLibraryUsageDescription": "This app accesses your photos to convert them for e-ink display."
+        "NSPhotoLibraryUsageDescription": "This app accesses your photos to convert them for e-ink display.",
+        "NSBluetoothAlwaysUsageDescription": "This app uses Bluetooth to connect and transfer images to your FrameInk device.",
+        "NSBluetoothPeripheralUsageDescription": "This app uses Bluetooth to connect and transfer images to your FrameInk device.",
+        "UIBackgroundModes": ["bluetooth-central"],
+        "NSLocationWhenInUseUsageDescription": "This app requires location access for Bluetooth device scanning.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "This app requires location access for Bluetooth device scanning."
       }
     },
     "android": {
@@ -24,10 +30,17 @@
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
+      "package": "com.yourcompany.frameink",
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.READ_EXTERNAL_STORAGE",
-        "android.permission.WRITE_EXTERNAL_STORAGE"
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.BLUETOOTH",
+        "android.permission.BLUETOOTH_ADMIN",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.BLUETOOTH_SCAN",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION"
       ]
     },
     "web": {
@@ -43,10 +56,16 @@
           "photosPermission": "The app needs access to your photos to convert them for e-ink display.",
           "cameraPermission": "The app needs access to your camera to capture photos for e-ink display."
         }
-      ]
+      ],
+      "./plugins/withBLEPermissions"
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "your-project-id"
+      }
     }
   }
 }
