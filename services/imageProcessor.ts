@@ -1,13 +1,20 @@
-import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
+// services/ImageProcessor.ts
+
 import * as FileSystem from 'expo-file-system';
-import { logger } from '../services/logger';
+import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { GrayscaleConverter } from './GrayscaleConverter';
+import { logger } from './logger';
+
+export type Orientation = 'portrait' | 'landscape';
+export const ORIENTATIONS = {
+  PORTRAIT: 'portrait' as Orientation,
+  LANDSCAPE: 'landscape' as Orientation,
+};
 
 export interface ProcessedImage {
   uri: string;
   width: number;
   height: number;
-  data?: Uint8Array;
 }
 
 export interface GrayscaleResult {
@@ -17,166 +24,111 @@ export interface GrayscaleResult {
   previewUri: string;
 }
 
-export const ORIENTATIONS = {
-  PORTRAIT: 'portrait',
-  LANDSCAPE: 'landscape'
-} as const;
-
-export type Orientation = typeof ORIENTATIONS[keyof typeof ORIENTATIONS];
-
 export class ImageProcessor {
-  static getDimensionsForOrientation(orientation: Orientation) {
-    return orientation === ORIENTATIONS.PORTRAIT 
-      ? { width: 540, height: 960 }
-      : { width: 960, height: 540 };
-  }
-
   static async cropAndResize(
-    imageUri: string, 
-    crop: { originX: number; originY: number; width: number; height: number },
+    imageUri: string,
+    cropData: { originX: number; originY: number; width: number; height: number },
     orientation: Orientation
   ): Promise<ProcessedImage> {
     try {
-      logger.debug('ImageProcessor', 'Starting crop and resize', {
-        orientation,
-        crop,
-        imageUri
-      });
-  
-      const dimensions = this.getDimensionsForOrientation(orientation);
-      
-      // First crop the image
-      const croppedImage = await manipulateAsync(
+      // Perform cropping and resizing operations
+      const result = await manipulateAsync(
         imageUri,
         [
           {
-            crop: {
-              originX: Math.round(crop.originX),
-              originY: Math.round(crop.originY),
-              width: Math.round(crop.width),
-              height: Math.round(crop.height)
-            },
-          }
-        ],
-        { format: SaveFormat.PNG }
-      );
-  
-      logger.debug('ImageProcessor', 'Crop complete, starting resize');
-  
-      // Then resize to final dimensions
-      const resizedImage = await manipulateAsync(
-        croppedImage.uri,
-        [
+            crop: cropData,
+          },
           {
             resize: {
-              width: dimensions.width,
-              height: dimensions.height,
-            }
-          }
+              width: orientation === ORIENTATIONS.PORTRAIT ? 540 : 960,
+              height: orientation === ORIENTATIONS.PORTRAIT ? 960 : 540,
+            },
+          },
         ],
-        { format: SaveFormat.PNG }
+        { compress: 1, format: SaveFormat.PNG }
       );
-  
-      logger.debug('ImageProcessor', 'Resize complete', {
-        finalWidth: dimensions.width,
-        finalHeight: dimensions.height,
-        resultUri: resizedImage.uri
+
+      logger.debug('ImageProcessor', 'Crop and resize complete', {
+        uri: result.uri,
+        width: result.width,
+        height: result.height,
       });
-  
+
       return {
-        uri: resizedImage.uri,
-        width: dimensions.width,
-        height: dimensions.height,
+        uri: result.uri,
+        width: result.width,
+        height: result.height,
       };
     } catch (error) {
-      logger.error('ImageProcessor', 'Error in crop and resize', error);
+      logger.error('ImageProcessor', 'Error in cropAndResize', error);
       throw error;
     }
   }
 
-  static async convertToGrayscale4bit(processedImage: ProcessedImage): Promise<GrayscaleResult> {
-    try {
-      logger.debug('ImageProcessor', 'Starting grayscale conversion');
-      const result = await GrayscaleConverter.convert(processedImage);
-      
-      // Save preview alongside the header file
-      const previewFilename = processedImage.uri.replace('.png', '_preview.jpg');
-      await FileSystem.copyAsync({
-        from: result.previewUri,
-        to: previewFilename
-      });
-      
-      return {
-        ...result,
-        previewUri: previewFilename
-      };
-    } catch (error) {
-      logger.error('ImageProcessor', 'Error in grayscale conversion', error);
-      throw error;
-    }
+  static async convertToGrayscale4bit(
+    processedImage: ProcessedImage
+  ): Promise<GrayscaleResult> {
+    const grayscaleResult = await GrayscaleConverter.convert(processedImage);
+    return grayscaleResult;
   }
 
-  static async saveProcessedData(grayscaleResult: GrayscaleResult, filename: string): Promise<string> {
+  static async saveProcessedData(
+    grayscaleResult: GrayscaleResult,
+    filename: string
+  ): Promise<string> {
     try {
-      logger.debug('ImageProcessor', 'Starting save process', { filename });
-
-      const formattedData = this.formatForEink(grayscaleResult);
-      
       const saveDir = `${FileSystem.documentDirectory}processed_images/`;
+      await FileSystem.makeDirectoryAsync(saveDir, { intermediates: true });
+
+      // Save the preview image
+      const previewFilename = `${filename}_preview.jpg`;
+      const previewPath = `${saveDir}${previewFilename}`;
+      await FileSystem.copyAsync({
+        from: grayscaleResult.previewUri,
+        to: previewPath,
+      });
+
+      logger.debug('ImageProcessor', 'Preview image saved', { previewPath });
+
+      // Prepare the .h file content
+      const fileContent = this.formatDataForEInk(
+        grayscaleResult.packedData,
+        grayscaleResult.width,
+        grayscaleResult.height,
+        previewPath
+      );
+
       const filePath = `${saveDir}${filename}.h`;
 
-      logger.debug('ImageProcessor', 'Saving to path', { 
-        saveDir, 
-        filePath 
+      // Save the .h file
+      await FileSystem.writeAsStringAsync(filePath, fileContent, {
+        encoding: FileSystem.EncodingType.UTF8,
       });
 
-      await FileSystem.makeDirectoryAsync(saveDir, { 
-        intermediates: true 
-      }).catch(error => {
-        logger.debug('ImageProcessor', 'Directory already exists or created', error);
-      });
-
-      await FileSystem.writeAsStringAsync(filePath, formattedData);
-
-      logger.debug('ImageProcessor', 'File saved successfully', { 
-        filePath 
-      });
+      logger.debug('ImageProcessor', 'Data file saved', { filePath });
 
       return filePath;
     } catch (error) {
-      logger.error('ImageProcessor', 'Error saving processed data', error);
+      logger.error('ImageProcessor', 'Error in saveProcessedData', error);
       throw error;
     }
   }
 
-  static formatForEink(grayscaleResult: GrayscaleResult): string {
-    logger.debug('ImageProcessor', 'Formatting data for e-ink', {
-      width: grayscaleResult.width,
-      height: grayscaleResult.height,
-      dataLength: grayscaleResult.packedData.length
-    });
+  private static formatDataForEInk(
+    packedData: Uint8Array,
+    width: number,
+    height: number,
+    previewPath: string
+  ): string {
+    // Create the content of the .h file, including the preview_path
+    const headerContent = `
+    // E-Ink Image Data
+    image_width = ${width};
+    image_height = ${height};
+    preview_path = "${previewPath}";
+    image_data = {${Array.from(packedData).join(',')}};
+    `;
 
-    const header = `// Generated by FrameInk\n` +
-                  `// Resolution: ${grayscaleResult.width}x${grayscaleResult.height}\n\n` +
-                  `const uint32_t image_width = ${grayscaleResult.width};\n` +
-                  `const uint32_t image_height = ${grayscaleResult.height};\n` +
-                  `const uint8_t image_data[${grayscaleResult.packedData.length}] = {\n`;
-
-    const dataHex = Array.from(grayscaleResult.packedData)
-      .map(byte => `0x${byte.toString(16).padStart(2, '0')}`)
-      .reduce((acc, hex, i) => {
-        if (i % 16 === 0) {
-          return acc + (i === 0 ? '  ' : ',\n  ') + hex;
-        }
-        return acc + ', ' + hex;
-      }, '');
-
-    const formattedData = header + dataHex + '\n};';
-
-    logger.debug('ImageProcessor', 'Formatting complete', {
-      dataLength: formattedData.length
-    });
-
-    return formattedData;
+    return headerContent;
   }
 }

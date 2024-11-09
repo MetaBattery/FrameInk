@@ -1,3 +1,5 @@
+// components/ImageCropper.tsx
+
 import React, { useRef, useState, useEffect } from 'react';
 import {
   StyleSheet,

@@ -1,4 +1,4 @@
-// app/index.tsx
+// app/(tabs)/index.tsx
 
 import React, { useState } from 'react';
 import {
@@ -29,6 +29,9 @@ import {
 } from '../../services/imageProcessor';
 import ImageCropper from '../../components/ImageCropper';
 import { logger } from '../../services/logger';
+import { Buffer } from 'buffer';
+
+globalThis.Buffer = Buffer;
 
 export default function HomeScreen() {
   const { colors } = useTheme();
