@@ -90,22 +90,21 @@ export class ImageProcessor {
 
       logger.debug('ImageProcessor', 'Preview image saved', { previewPath });
 
-      // Prepare the .h file content
-      const fileContent = this.formatDataForEInk(
+      // Create binary file content
+      const binaryData = this.formatDataForEInk(
         grayscaleResult.packedData,
         grayscaleResult.width,
-        grayscaleResult.height,
-        previewPath
+        grayscaleResult.height
       );
 
-      const filePath = `${saveDir}${filename}.h`;
+      const filePath = `${saveDir}${filename}.bin`;
 
-      // Save the .h file
-      await FileSystem.writeAsStringAsync(filePath, fileContent, {
-        encoding: FileSystem.EncodingType.UTF8,
+      // Save the binary file
+      await FileSystem.writeAsStringAsync(filePath, binaryData, {
+        encoding: FileSystem.EncodingType.Base64,
       });
 
-      logger.debug('ImageProcessor', 'Data file saved', { filePath });
+      logger.debug('ImageProcessor', 'Binary data file saved', { filePath });
 
       return filePath;
     } catch (error) {
@@ -117,18 +116,28 @@ export class ImageProcessor {
   private static formatDataForEInk(
     packedData: Uint8Array,
     width: number,
-    height: number,
-    previewPath: string
+    height: number
   ): string {
-    // Create the content of the .h file, including the preview_path
-    const headerContent = `
-    // E-Ink Image Data
-    image_width = ${width};
-    image_height = ${height};
-    preview_path = "${previewPath}";
-    image_data = {${Array.from(packedData).join(',')}};
-    `;
+    // Create a header with metadata (8 bytes)
+    const header = new Uint8Array(8);
+    // Store width (2 bytes)
+    header[0] = width & 0xFF;
+    header[1] = (width >> 8) & 0xFF;
+    // Store height (2 bytes)
+    header[2] = height & 0xFF;
+    header[3] = (height >> 8) & 0xFF;
+    // Reserved bytes for future use
+    header[4] = 0;
+    header[5] = 0;
+    header[6] = 0;
+    header[7] = 0;
 
-    return headerContent;
+    // Combine header and image data
+    const combinedData = new Uint8Array(header.length + packedData.length);
+    combinedData.set(header);
+    combinedData.set(packedData, header.length);
+
+    // Convert to base64 for FileSystem.writeAsStringAsync
+    return Buffer.from(combinedData).toString('base64');
   }
 }

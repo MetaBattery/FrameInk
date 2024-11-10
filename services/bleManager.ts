@@ -280,70 +280,79 @@ class BLEManager {
 
   async connectToDevice(device: Device): Promise<void> {
     if (!this.isInitialized) {
-      throw new Error('BLE Manager not initialized');
+        throw new Error('BLE Manager not initialized');
     }
 
     if (this.connectionState.connecting) {
-      throw new Error('Connection already in progress');
+        throw new Error('Connection already in progress');
     }
 
     try {
-      this.connectionState = {
-        connected: false,
-        connecting: true,
-        error: null
-      };
+        this.connectionState = {
+            connected: false,
+            connecting: true,
+            error: null
+        };
 
-      logger.debug('BLEManager', 'Connecting to device', { deviceId: device.id });
-      
-      if (this.device) {
-        await this.disconnect();
-      }
-
-      const connectOperation = async () => {
-        const connectedDevice = await this.withTimeout(
-          device.connect(),
-          this.options.timeout || this.DEFAULT_TIMEOUT,
-          'Device connection'
-        );
+        logger.debug('BLEManager', 'Connecting to device', { deviceId: device.id });
         
-        await this.withTimeout(
-          connectedDevice.discoverAllServicesAndCharacteristics(),
-          this.options.timeout || this.DEFAULT_TIMEOUT,
-          'Service discovery'
+        if (this.device) {
+            await this.disconnect();
+        }
+
+        const connectOperation = async () => {
+            const connectedDevice = await this.withTimeout(
+                device.connect(),
+                this.options.timeout || this.DEFAULT_TIMEOUT,
+                'Device connection'
+            );
+            
+            await this.withTimeout(
+                connectedDevice.discoverAllServicesAndCharacteristics(),
+                this.options.timeout || this.DEFAULT_TIMEOUT,
+                'Service discovery'
+            );
+
+            // Request MTU size change
+            const requestedMtu = 512;
+            const mtu = await this.withTimeout(
+                connectedDevice.requestMTU(requestedMtu),
+                this.options.timeout || this.DEFAULT_TIMEOUT,
+                'Request MTU size'
+            );
+            logger.debug('BLEManager', 'MTU size negotiated', { mtu });
+
+            return connectedDevice;
+        };
+
+        this.device = await this.withRetries(
+            connectOperation,
+            this.options.retries || this.MAX_RETRIES,
+            'Device connection'
         );
-        
-        return connectedDevice;
-      };
 
-      this.device = await this.withRetries(
-        connectOperation,
-        this.options.retries || this.MAX_RETRIES,
-        'Device connection'
-      );
+        this.connectionState = {
+            connected: true,
+            connecting: false,
+            error: null
+        };
 
-      this.connectionState = {
-        connected: true,
-        connecting: false,
-        error: null
-      };
+        // Set up disconnection listener
+        this.device.onDisconnected((error) => {
+            this.handleDisconnect(error);
+        });
 
-      // Set up disconnection listener
-      this.device.onDisconnected((error) => {
-        this.handleDisconnect(error);
-      });
-
-      logger.debug('BLEManager', 'Device setup complete');
+        logger.debug('BLEManager', 'Device setup complete');
     } catch (error) {
-      this.connectionState = {
-        connected: false,
-        connecting: false,
-        error: error instanceof Error ? error.message : 'Unknown error'
-      };
-      logger.error('BLEManager', 'Connection failed', error);
-      throw error;
+        this.connectionState = {
+            connected: false,
+            connecting: false,
+            error: error instanceof Error ? error.message : 'Unknown error'
+        };
+        logger.error('BLEManager', 'Connection failed', error);
+        throw error;
     }
-  }
+}
 
   private handleDisconnect(error?: any) {
     logger.debug('BLEManager', 'Device disconnected', error);
@@ -355,78 +364,95 @@ class BLEManager {
     };
   }
 
-async listFiles(): Promise<FileInfo[]> {
+  async listFiles(): Promise<FileInfo[]> {
     if (!this.isInitialized || !this.device) {
         throw new Error('No device connected');
     }
 
-    const listOperation = async () => {
-        logger.debug('BLEManager', 'Requesting file list');
-        
-        await this.withTimeout(
-            this.device!.writeCharacteristicWithResponseForService(
-                this.SERVICE_UUID,
-                this.COMMAND_CHAR_UUID,
-                Buffer.from('LIST').toString('base64')
-            ),
-            this.options.timeout || this.DEFAULT_TIMEOUT,
-            'Write LIST command'
+    return new Promise<FileInfo[]>((resolve, reject) => {
+        const files: FileInfo[] = [];
+        let subscription: any;
+        let timeoutHandle: NodeJS.Timeout;
+
+        const cleanup = () => {
+            if (subscription) {
+                subscription.remove();
+                subscription = null;
+            }
+            if (timeoutHandle) {
+                clearTimeout(timeoutHandle);
+                timeoutHandle = null;
+            }
+        };
+
+        const finalize = () => {
+            cleanup();
+            resolve(files);
+        };
+
+        // Start a timeout to finalize the result if no new data is received
+        const resetTimeout = () => {
+            if (timeoutHandle) {
+                clearTimeout(timeoutHandle);
+            }
+            timeoutHandle = setTimeout(() => {
+                logger.debug('BLEManager', 'No more data received, finalizing file list');
+                finalize();
+            }, 500);  // Wait 500 ms before finalizing
+        };
+
+        // Subscribe to notifications on the FILE_CHAR_UUID
+        subscription = this.device.monitorCharacteristicForService(
+            this.SERVICE_UUID,
+            this.FILE_CHAR_UUID,
+            (error, characteristic) => {
+                if (error) {
+                    logger.error('BLEManager', 'Error receiving notification', error);
+                    cleanup();
+                    reject(error);
+                    return;
+                }
+
+                if (characteristic?.value) {
+                    const decodedResponse = Buffer.from(characteristic.value, 'base64').toString('utf8');
+                    logger.debug('BLEManager', 'Received file info', {
+                        text: decodedResponse
+                    });
+
+                    // Each notification contains one file info
+                    const item = decodedResponse.trim();
+                    if (item.length > 0) {
+                        const [name, size] = item.split(',');
+                        if (name && size) {
+                            files.push({
+                                name: name.trim(),
+                                size: parseInt(size.trim(), 10)
+                            });
+                        }
+                    }
+
+                    // Reset the timeout since we received data
+                    resetTimeout();
+                } else {
+                    logger.warn('BLEManager', 'No response value received');
+                }
+            }
         );
 
-        const response = await this.withTimeout(
-            this.device!.readCharacteristicForService(
-                this.SERVICE_UUID,
-                this.FILE_CHAR_UUID
-            ),
-            this.options.timeout || this.DEFAULT_TIMEOUT,
-            'Read file list'
-        );
+        // Send the LIST command
+        this.device.writeCharacteristicWithResponseForService(
+            this.SERVICE_UUID,
+            this.COMMAND_CHAR_UUID,
+            Buffer.from('LIST').toString('base64')
+        ).catch(error => {
+            logger.error('BLEManager', 'Failed to send LIST command', error);
+            cleanup();
+            reject(error);
+        });
 
-        if (response?.value) {
-            // Log raw response
-            logger.debug('BLEManager', 'Raw file list response', {
-                base64: response.value
-            });
-
-            const decodedResponse = Buffer.from(response.value, 'base64').toString('utf8');
-            logger.debug('BLEManager', 'Decoded response', {
-                text: decodedResponse
-            });
-
-            // Split by semicolon and process each entry
-            const files = decodedResponse
-                .split(';')
-                .filter(item => item.length > 0)
-                .map(item => {
-                    const [name, size] = item.split(',');
-                    return {
-                        name: name?.trim() || 'unknown',
-                        size: parseInt(size?.trim() || '0', 10)
-                    };
-                });
-
-            logger.debug('BLEManager', 'Parsed file list', {
-                count: files.length,
-                files: files
-            });
-
-            return files;
-        }
-
-        logger.warn('BLEManager', 'No response value received');
-        return [];
-    };
-
-    try {
-        return await this.withRetries(
-            listOperation,
-            this.options.retries || this.MAX_RETRIES,
-            'List files'
-        );
-    } catch (error) {
-        logger.error('BLEManager', 'List files failed', error);
-        throw error;
-    }
+        // Initialize the timeout
+        resetTimeout();
+    });
 }
 
   async deleteFile(filename: string): Promise<boolean> {
