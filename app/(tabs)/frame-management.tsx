@@ -12,14 +12,9 @@ import {
   IconButton
 } from 'react-native-paper';
 import { Device } from 'react-native-ble-plx';
-import { getBleManager } from '../../services/bleManager';
+import { getBleManager, FileInfo } from '../../services/bleManager';
 import { logger } from '../../services/logger';
 import { MaterialIcons } from '@expo/vector-icons';
-
-interface DeviceFile {
-  name: string;
-  size: number;
-}
 
 export default function FrameManagementScreen() {
   const { colors } = useTheme();
@@ -30,9 +25,10 @@ export default function FrameManagementScreen() {
   const [isScanning, setIsScanning] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [connectedDevice, setConnectedDevice] = useState<Device | null>(null);
-  const [deviceFiles, setDeviceFiles] = useState<DeviceFile[]>([]);
+  const [deviceFiles, setDeviceFiles] = useState<FileInfo[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [deletingFile, setDeletingFile] = useState<string | null>(null);
 
   // Initialize BLE manager
   useEffect(() => {
@@ -159,11 +155,15 @@ export default function FrameManagementScreen() {
     try {
       setError(null);
       setIsLoading(true);
+      logger.debug('FrameManagement', 'Loading device files');
+      
       const files = await bleManager.listFiles();
-      setDeviceFiles(files.map(file => {
-        const [name, size] = file.split(',');
-        return { name, size: parseInt(size) };
-      }));
+      setDeviceFiles(files);
+      
+      logger.debug('FrameManagement', 'Files loaded', { 
+        count: files.length,
+        files: files
+      });
     } catch (error) {
       logger.error('FrameManagement', 'File list error', error);
       setError('Failed to load files');
@@ -187,7 +187,7 @@ export default function FrameManagementScreen() {
           onPress: async () => {
             try {
               setError(null);
-              setIsLoading(true);
+              setDeletingFile(filename);
               await bleManager.deleteFile(filename);
               await loadDeviceFiles();
               Alert.alert('Success', 'File deleted successfully');
@@ -196,7 +196,7 @@ export default function FrameManagementScreen() {
               setError('Failed to delete file');
               Alert.alert('Error', 'Failed to delete file');
             } finally {
-              setIsLoading(false);
+              setDeletingFile(null);
             }
           }
         }
@@ -326,6 +326,8 @@ export default function FrameManagementScreen() {
                         {...props}
                         icon="delete"
                         onPress={() => handleDeleteFile(file.name)}
+                        disabled={isLoading || deletingFile === file.name}
+                        loading={deletingFile === file.name}
                       />
                     )}
                     style={styles.fileItem}
@@ -354,105 +356,105 @@ export default function FrameManagementScreen() {
 }
 
 const makeStyles = (colors: any) =>
-  StyleSheet.create({
-    container: {
-      flex: 1,
-      backgroundColor: colors.background,
-    },
-    surface: {
-      flex: 1,
-      marginHorizontal: 16,
-      marginTop: 16,
-      marginBottom: 16,
-      elevation: 4,
-      borderRadius: 8,
-      backgroundColor: colors.surface,
-    },
-    scrollContainer: {
-      padding: 16,
-      flexGrow: 1,
-    },
-    centerContainer: {
-      flex: 1,
-      justifyContent: 'center',
-      alignItems: 'center',
-      padding: 20,
-    },
-    errorContainer: {
-      padding: 16,
-      backgroundColor: colors.error,
-      borderRadius: 8,
-      marginBottom: 16,
-    },
-    errorText: {
-      color: colors.surface,
-      textAlign: 'center',
-      fontSize: 14,
-    },
-    statusContainer: {
-      marginBottom: 16,
-      flexDirection: 'row',
-      alignItems: 'center',
-    },
-    statusIndicator: {
-      width: 12,
-      height: 12,
-      borderRadius: 6,
-      marginRight: 8,
-    },
-    statusText: {
-      fontSize: 18,
-      fontWeight: 'bold',
-      color: colors.text,
-    },
-    deviceName: {
-      fontSize: 16,
-      color: colors.text,
-      marginTop: 4,
-    },
-    button: {
-      marginVertical: 8,
-    },
-    fileListContainer: {
-      marginTop: 24,
-    },
-    fileListHeader: {
-      flexDirection: 'row',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      marginBottom: 16,
-    },
-    sectionTitle: {
-      fontSize: 20,
-      fontWeight: 'bold',
-      color: colors.text,
-    },
-    fileItem: {
-      padding: 0,
-      marginVertical: 4,
-      backgroundColor: colors.surface,
-    },
-    emptyState: {
-      alignItems: 'center',
-      padding: 20,
-    },
-    emptyStateText: {
-      color: colors.text,
-      fontSize: 16,
-      textAlign: 'center',
-      marginBottom: 12,
-    },
-    refreshButton: {
-      marginTop: 8,
-    },
-    initializingText: {
-      marginTop: 16,
-      fontSize: 16,
-      color: colors.text,
-    },
-    loadingText: {
-      marginTop: 16,
-      fontSize: 16,
-      color: colors.text,
-    }
-  });
+    StyleSheet.create({
+      container: {
+        flex: 1,
+        backgroundColor: colors.background,
+      },
+      surface: {
+        flex: 1,
+        marginHorizontal: 16,
+        marginTop: 16,
+        marginBottom: 16,
+        elevation: 4,
+        borderRadius: 8,
+        backgroundColor: colors.surface,
+      },
+      scrollContainer: {
+        padding: 16,
+        flexGrow: 1,
+      },
+      centerContainer: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        padding: 20,
+      },
+      errorContainer: {
+        padding: 16,
+        backgroundColor: colors.error,
+        borderRadius: 8,
+        marginBottom: 16,
+      },
+      errorText: {
+        color: colors.surface,
+        textAlign: 'center',
+        fontSize: 14,
+      },
+      statusContainer: {
+        marginBottom: 16,
+        flexDirection: 'row',
+        alignItems: 'center',
+      },
+      statusIndicator: {
+        width: 12,
+        height: 12,
+        borderRadius: 6,
+        marginRight: 8,
+      },
+      statusText: {
+        fontSize: 18,
+        fontWeight: 'bold',
+        color: colors.text,
+      },
+      deviceName: {
+        fontSize: 16,
+        color: colors.text,
+        marginTop: 4,
+      },
+      button: {
+        marginVertical: 8,
+      },
+      fileListContainer: {
+        marginTop: 24,
+      },
+      fileListHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 16,
+      },
+      sectionTitle: {
+        fontSize: 20,
+        fontWeight: 'bold',
+        color: colors.text,
+      },
+      fileItem: {
+        padding: 0,
+        marginVertical: 4,
+        backgroundColor: colors.surface,
+      },
+      emptyState: {
+        alignItems: 'center',
+        padding: 20,
+      },
+      emptyStateText: {
+        color: colors.text,
+        fontSize: 16,
+        textAlign: 'center',
+        marginBottom: 12,
+      },
+      refreshButton: {
+        marginTop: 8,
+      },
+      initializingText: {
+        marginTop: 16,
+        fontSize: 16,
+        color: colors.text,
+      },
+      loadingText: {
+        marginTop: 16,
+        fontSize: 16,
+        color: colors.text,
+      }
+    });

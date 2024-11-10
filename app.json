@@ -14,15 +14,17 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.yourcompany.frameink",
+      "bundleIdentifier": "com.brayapp.frameink",
       "infoPlist": {
         "NSCameraUsageDescription": "This app uses the camera to capture images for e-ink display conversion.",
         "NSPhotoLibraryUsageDescription": "This app accesses your photos to convert them for e-ink display.",
+        "NSLocationWhenInUseUsageDescription": "This app requires location access for Bluetooth device scanning.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "This app requires location access for Bluetooth device scanning.",
         "NSBluetoothAlwaysUsageDescription": "This app uses Bluetooth to connect and transfer images to your FrameInk device.",
         "NSBluetoothPeripheralUsageDescription": "This app uses Bluetooth to connect and transfer images to your FrameInk device.",
-        "UIBackgroundModes": ["bluetooth-central"],
-        "NSLocationWhenInUseUsageDescription": "This app requires location access for Bluetooth device scanning.",
-        "NSLocationAlwaysAndWhenInUseUsageDescription": "This app requires location access for Bluetooth device scanning."
+        "UIBackgroundModes": [
+          "bluetooth-central"
+        ]
       }
     },
     "android": {
@@ -30,17 +32,18 @@
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "package": "com.yourcompany.frameink",
+      "package": "com.brayapp.frameink",
       "permissions": [
-        "android.permission.CAMERA",
-        "android.permission.READ_EXTERNAL_STORAGE",
-        "android.permission.WRITE_EXTERNAL_STORAGE",
         "android.permission.BLUETOOTH",
         "android.permission.BLUETOOTH_ADMIN",
         "android.permission.BLUETOOTH_CONNECT",
         "android.permission.BLUETOOTH_SCAN",
         "android.permission.ACCESS_FINE_LOCATION",
-        "android.permission.ACCESS_COARSE_LOCATION"
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.CAMERA",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.RECORD_AUDIO"
       ]
     },
     "web": {
@@ -57,14 +60,18 @@
           "cameraPermission": "The app needs access to your camera to capture photos for e-ink display."
         }
       ],
-      "./plugins/withBLEPermissions"
+      [
+        "./plugins/withBLEPermissions",
+        {}
+      ],
+      "react-native-ble-plx"
     ],
     "experiments": {
       "typedRoutes": true
     },
     "extra": {
       "eas": {
-        "projectId": "your-project-id"
+        "projectId": "a4367bbe-e567-489a-8042-e1eb556220f3"
       }
     }
   }
