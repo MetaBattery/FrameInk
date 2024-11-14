@@ -2,7 +2,7 @@
   "expo": {
     "name": "FrameInk",
     "slug": "FrameInk",
-    "version": "2.0.0",
+    "version": "3.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "myapp",
@@ -15,7 +15,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.brayapp.frameink",
-      "buildNumber": "2",
+      "buildNumber": "3",
       "infoPlist": {
         "NSCameraUsageDescription": "This app uses the camera to capture images for e-ink display conversion.",
         "NSPhotoLibraryUsageDescription": "This app accesses your photos to convert them for e-ink display.",
@@ -34,7 +34,6 @@
         "backgroundColor": "#ffffff"
       },
       "package": "com.brayapp.frameink",
-      "versionCode": 2,
       "permissions": [
         "android.permission.BLUETOOTH",
         "android.permission.BLUETOOTH_ADMIN",

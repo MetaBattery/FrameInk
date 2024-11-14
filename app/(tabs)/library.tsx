@@ -27,9 +27,12 @@ import {
   Chip,
   ActivityIndicator,
   useTheme,
+  ProgressBar,
 } from 'react-native-paper';
 import { useFocusEffect } from '@react-navigation/native';
 import { logger } from '../../services/logger';
+import { getBleManager, TransferProgress } from '../../services/bleManager';
+import { Buffer } from 'buffer';
 
 // Types
 interface ProcessedImage {
@@ -62,6 +65,8 @@ export default function LibraryScreen() {
   const [newFileName, setNewFileName] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [transferProgress, setTransferProgress] = useState<TransferProgress | null>(null);
+  const [isTransferring, setIsTransferring] = useState(false);
   const [sortOption, setSortOption] = useState<SortOption>({
     label: 'Newest',
     value: 'timestamp',
@@ -71,6 +76,36 @@ export default function LibraryScreen() {
   useFocusEffect(
     useCallback(() => {
       loadProcessedImages();
+
+      // Set up transfer progress listener
+      const setupTransferListener = async () => {
+        try {
+          const bleManager = await getBleManager();
+          bleManager.addTransferListener((progress) => {
+            setTransferProgress(progress.totalBytes > 0 ? progress : null);
+            setIsTransferring(progress.totalBytes > 0);
+          });
+        } catch (error) {
+          logger.error('Library', 'Failed to setup transfer listener', error);
+        }
+      };
+
+      setupTransferListener();
+
+      // Cleanup
+      return () => {
+        const cleanup = async () => {
+          try {
+            const bleManager = await getBleManager();
+            bleManager.removeTransferListener((progress) => {
+              setTransferProgress(progress.totalBytes > 0 ? progress : null);
+            });
+          } catch (error) {
+            logger.error('Library', 'Failed to cleanup transfer listener', error);
+          }
+        };
+        cleanup();
+      };
     }, [refreshTrigger])
   );
 
@@ -231,6 +266,51 @@ export default function LibraryScreen() {
     }
   };
 
+  const handleSendToFrame = async (image: ProcessedImage) => {
+    try {
+      const bleManager = await getBleManager();
+      
+      if (!bleManager.isConnected()) {
+        Alert.alert(
+          'Not Connected',
+          'Please connect to your frame first in the Frame Management screen.',
+          [
+            {
+              text: 'OK',
+              onPress: () => setDetailModalVisible(false)
+            }
+          ]
+        );
+        return;
+      }
+
+      setIsTransferring(true);
+
+      // Read the file content
+      const fileContent = await FileSystem.readAsStringAsync(image.path, {
+        encoding: FileSystem.EncodingType.Base64
+      });
+
+      // Convert base64 string to Buffer
+      const buffer = Buffer.from(fileContent, 'base64');
+
+      // Send the file
+      const success = await bleManager.uploadFile(image.filename, buffer);
+
+      if (success) {
+        Alert.alert('Success', 'Image sent to frame successfully!');
+        setDetailModalVisible(false);
+      } else {
+        Alert.alert('Error', 'Failed to send image to frame');
+      }
+    } catch (error) {
+      logger.error('Library', 'Error sending image to frame', error);
+      Alert.alert('Error', 'Failed to send image to frame');
+    } finally {
+      setIsTransferring(false);
+    }
+  };
+
   const handleDeleteImage = async (image: ProcessedImage) => {
     try {
       await FileSystem.deleteAsync(image.path);
@@ -315,6 +395,19 @@ export default function LibraryScreen() {
                 {(selectedImage.fileSize / 1024).toFixed(2)} KB
               </Text>
             </View>
+
+            {transferProgress && (
+              <View style={styles.progressContainer}>
+                <Text style={styles.progressText}>
+                  Transferring: {Math.round((transferProgress.bytesTransferred / transferProgress.totalBytes) * 100)}%
+                </Text>
+                <ProgressBar
+                  progress={transferProgress.bytesTransferred / transferProgress.totalBytes}
+                  color={theme.colors.primary}
+                  style={styles.progressBar}
+                />
+              </View>
+            )}
           </ScrollView>
 
           <View style={styles.modalButtons}>
@@ -336,12 +429,12 @@ export default function LibraryScreen() {
             </Button>
             <Button
               mode="contained"
-              onPress={() => {
-                Alert.alert('Coming Soon', 'Send to e-paper feature coming soon!');
-              }}
+              onPress={() => handleSendToFrame(selectedImage)}
               style={styles.modalButton}
+              loading={isTransferring}
+              disabled={isTransferring}
             >
-              Send to E-Paper
+              {isTransferring ? 'Sending...' : 'Send to E-Paper'}
             </Button>
           </View>
         </View>
@@ -529,8 +622,6 @@ const makeStyles = (colors: any) =>
       elevation: 4,
       borderRadius: 8,
       backgroundColor: colors.surface,
-      marginHorizontal: 16,
-      marginTop: 16,
     },
     scrollContainer: {
       padding: 16,
@@ -566,7 +657,7 @@ const makeStyles = (colors: any) =>
     },
     card: {
       margin: 8,
-      width: (Dimensions.get('window').width - 64) / 2, // Adjust for padding and margins
+      width: (Dimensions.get('window').width - 64) / 2,
     },
     imageContainer: {
       alignItems: 'center',
@@ -645,6 +736,22 @@ const makeStyles = (colors: any) =>
       fontSize: 16,
       marginTop: 4,
       color: colors.text,
+    },
+    progressContainer: {
+      marginHorizontal: 16,
+      marginBottom: 16,
+      padding: 8,
+      backgroundColor: colors.surfaceVariant,
+      borderRadius: 8,
+    },
+    progressText: {
+      fontSize: 14,
+      color: colors.onSurfaceVariant,
+      marginBottom: 4,
+    },
+    progressBar: {
+      height: 4,
+      borderRadius: 2,
     },
     modalButtons: {
       flexDirection: 'row',
