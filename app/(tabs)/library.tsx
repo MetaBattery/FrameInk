@@ -31,7 +31,7 @@ import {
 } from 'react-native-paper';
 import { useFocusEffect } from '@react-navigation/native';
 import { logger } from '../../services/logger';
-import { getBleManager, TransferProgress } from '../../services/bleManager';
+import { getBleManager, TransferProgress } from '../../services/BLEManager';
 import { Buffer } from 'buffer';
 
 // Types
