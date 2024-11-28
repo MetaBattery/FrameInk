@@ -48,6 +48,7 @@ export interface OperationTiming {
     type: string;
     status: 'started' | 'completed' | 'failed';
     error?: Error;
+    metadata?: any; // This allows us to store file transfer metadata
 }
 
 export interface ConnectionDiagnostics {
@@ -60,6 +61,12 @@ export interface ConnectionDiagnostics {
     averageOperationTime: number;
     connectionAttempts: number;
     lastError: string | null;
+    fileTransfers: {
+        total: number;
+        successful: number;
+        failed: number;
+        averageSpeed: number;
+    };
 }
 
 export type DiagnosticsCallback = (diagnostics: ConnectionDiagnostics) => void;
@@ -69,4 +76,32 @@ export interface BLEManagerEvents {
     onTransferProgress?: (progress: TransferProgress) => void;
     onError?: (error: Error, context: string) => void;
     onDeviceFound?: (device: Device) => void;
+}
+
+// New interfaces based on Arduino code
+
+export interface StorageSpace {
+    total: number;
+    used: number;
+}
+
+export interface BLECommands {
+    LIST: 'LIST';
+    DELETE: 'DELETE';
+    SPACE: 'SPACE';
+    START: 'START';
+    END: 'END';
+}
+
+export interface BLEResponses {
+    OK: 'OK';
+    FAIL: 'FAIL';
+    READY: 'READY';
+    ERROR: 'ERROR';
+    DONE: 'DONE';
+}
+
+export interface FileTransferMetadata {
+    filename: string;
+    size: number;
 }

@@ -1,532 +1,336 @@
-// BLEConnectionManager.ts
+// services/BLEConnectionManager.ts
+
 import { BleManager, Device, State } from 'react-native-ble-plx';
 import { Platform, PermissionsAndroid } from 'react-native';
-import { Buffer } from 'buffer';
 import { EnhancedLogger } from './EnhancedLogger';
 import { OperationTracker } from './BLEOperationTracker';
-import { 
-    ConnectionState, 
-    DeviceConnectionMetrics, 
+import {
+    ConnectionState,
+    DeviceConnectionMetrics,
     BLEOptions,
-    ConnectionDiagnostics 
+    ConnectionDiagnostics,
 } from './BLETypes';
 
-const delay = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
-
-const formatRSSI = (rssi: number): string => {
-    if (rssi >= -50) return `${rssi} dBm (Excellent)`;
-    if (rssi >= -60) return `${rssi} dBm (Good)`;
-    if (rssi >= -70) return `${rssi} dBm (Fair)`;
-    return `${rssi} dBm (Poor)`;
-};
-
-const getSignalQuality = (rssi: number): DeviceConnectionMetrics['signalStrength'] => {
-    if (rssi >= -60) return 'Excellent';
-    if (rssi >= -70) return 'Good';
-    if (rssi >= -80) return 'Fair';
-    return 'Poor';
-};
-
-const getSignalStability = (rssiDelta: number): DeviceConnectionMetrics['stability'] => {
-    if (rssiDelta <= 5) return 'Stable';
-    if (rssiDelta <= 10) return 'Moderate';
-    return 'Unstable';
-};
+const DEFAULT_SCAN_TIMEOUT = 6000;
+const DEFAULT_MTU = 247;
 
 export class BLEConnectionManager extends OperationTracker {
-    private bleManager: BleManager | null = null;
-    private device: Device | null = null;
-    private readonly DEFAULT_TIMEOUT: number;
-    private readonly MAX_RETRIES: number;
-    private readonly INIT_DELAY: number;
-    private readonly TARGET_MTU: number;
-    private _isInitialized: boolean;
+    private bleManager: BleManager;
+    private connectedDevice: Device | null = null;
+    private isInitialized: boolean = false;
     private connectionState: ConnectionState;
-    private deviceMetrics: DeviceConnectionMetrics | null = null;
-    private monitoringSubscriptions: { remove: () => void }[] = [];
+    private readonly options: BLEOptions;
 
-    constructor(private options: BLEOptions = {}) {
+    constructor(options: BLEOptions = {}) {
         super();
-        this.DEFAULT_TIMEOUT = options.timeout || 10000;
-        this.MAX_RETRIES = options.retries || 3;
-        this.INIT_DELAY = Platform.OS === 'android' ? 2000 : 1000;
-        this.TARGET_MTU = options.mtu || 517;
-        this._isInitialized = false;
+        EnhancedLogger.debug('BLEConnectionManager', 'Constructor called', { options });
+        this.options = options;
+        this.bleManager = new BleManager();
         this.connectionState = {
             connected: false,
             connecting: false,
             error: null,
-            connectionAttempts: 0
+            connectionAttempts: 0,
         };
-
-        EnhancedLogger.info('BLEConnectionManager', 'Instance created', {
-            options: this.options,
-            platform: Platform.OS,
-            version: Platform.Version
-        });
-    }
-
-    get isInitialized(): boolean {
-        return this._isInitialized;
+        EnhancedLogger.info('BLEConnectionManager', 'Instance created', { options });
     }
 
     async initialize(): Promise<boolean> {
-        if (this._isInitialized) {
-            EnhancedLogger.debug('BLEConnectionManager', 'Already initialized');
+        EnhancedLogger.debug('BLEConnectionManager', 'Initialize method called');
+        if (this.isInitialized) {
+            EnhancedLogger.info('BLEConnectionManager', 'Already initialized');
             return true;
         }
 
-        const initOperationId = this.generateTransactionId();
-        this.trackOperation('initialization', initOperationId);
-
         try {
-            EnhancedLogger.info('BLEConnectionManager', 'Starting initialization');
-            const initStartTime = Date.now();
-            
-            await delay(this.INIT_DELAY);
-            
-            try {
-                this.bleManager = new BleManager({
-                    restoreStateIdentifier: 'FrameInkBleManager',
-                    restoreStateFunction: (restoredState) => {
-                        EnhancedLogger.debug('BLEConnectionManager', 'State restored', { restoredState });
-                    }
-                });
-            } catch (error) {
-                EnhancedLogger.error('BLEConnectionManager', 'Failed to create BleManager instance', error as Error);
-                throw new Error('Failed to initialize Bluetooth manager');
-            }
-
-            if (!this.bleManager) {
-                throw new Error('BleManager initialization failed');
-            }
-
             if (Platform.OS === 'android') {
                 await this.requestAndroidPermissions();
             }
-
-            await this.checkAndWaitForBluetoothState();
-
-            this._isInitialized = true;
-            const initDuration = Date.now() - initStartTime;
-            EnhancedLogger.info('BLEConnectionManager', 'Initialization complete', { 
-                duration: `${initDuration}ms`,
-                bleState: await this.bleManager.state()
-            });
-
-            this.completeOperation(initOperationId);
+            await this.waitForBluetoothState();
+            this.isInitialized = true;
+            EnhancedLogger.info('BLEConnectionManager', 'Initialization complete');
             return true;
         } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : 'Unknown error during initialization';
-            EnhancedLogger.error('BLEConnectionManager', 'Initialization failed', error as Error, {
-                platform: Platform.OS,
-                platformVersion: Platform.Version,
-                initDelay: this.INIT_DELAY,
-                timeout: this.DEFAULT_TIMEOUT
-            });
-
-            this.completeOperation(initOperationId, error as Error);
-            this._isInitialized = false;
-            this.bleManager = null;
-            throw new Error(`Bluetooth initialization failed: ${errorMessage}`);
-        }
-    }
-
-    private async checkAndWaitForBluetoothState(): Promise<void> {
-        if (!this.bleManager) throw new Error('BLE Manager not initialized');
-
-        const state = await this.bleManager.state();
-        if (state !== State.PoweredOn) {
-            EnhancedLogger.info('BLEConnectionManager', 'Waiting for BLE to power on', { currentState: state });
-            
-            await new Promise<void>((resolve, reject) => {
-                const timeout = setTimeout(() => {
-                    reject(new Error('Timeout waiting for BLE to power on'));
-                }, this.DEFAULT_TIMEOUT);
-
-                let subscription: any;
-                try {
-                    subscription = this.bleManager!.onStateChange((newState) => {
-                        EnhancedLogger.debug('BLEConnectionManager', 'BLE State changed', { 
-                            previousState: state, 
-                            newState 
-                        });
-                        
-                        if (newState === State.PoweredOn) {
-                            clearTimeout(timeout);
-                            if (subscription) {
-                                subscription.remove();
-                            }
-                            resolve();
-                        } else if (newState === State.PoweredOff) {
-                            EnhancedLogger.warn('BLEConnectionManager', 'Bluetooth is powered off');
-                        } else if (newState === State.Unauthorized) {
-                            reject(new Error('Bluetooth permission denied'));
-                        }
-                    }, true);
-                } catch (error) {
-                    clearTimeout(timeout);
-                    reject(error);
-                }
-            });
+            EnhancedLogger.error('BLEConnectionManager', 'Initialization failed', error as Error);
+            this.isInitialized = false;
+            throw error;
         }
     }
 
     private async requestAndroidPermissions(): Promise<void> {
-        if (Platform.OS === 'android') {
-            const permissionOperationId = this.generateTransactionId();
-            this.trackOperation('permission_request', permissionOperationId);
-
-            try {
-                const permissions = [
-                    PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-                    PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION,
-                ];
-
-                if (Platform.Version >= 31) {
-                    permissions.push(
-                        PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
-                        PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT
-                    );
-                }
-
-                EnhancedLogger.debug('BLEConnectionManager', 'Requesting Android permissions', { 
-                    permissions,
-                    androidVersion: Platform.Version
-                });
-
-                const granted = await PermissionsAndroid.requestMultiple(permissions);
-                
-                EnhancedLogger.debug('BLEConnectionManager', 'Permission results', { granted });
-
-                const allGranted = Object.values(granted).every(
-                    status => status === PermissionsAndroid.RESULTS.GRANTED
-                );
-
-                if (!allGranted) {
-                    const deniedPermissions = Object.entries(granted)
-                        .filter(([_, status]) => status !== PermissionsAndroid.RESULTS.GRANTED)
-                        .map(([permission]) => permission);
-
-                    throw new Error(`Required permissions not granted: ${deniedPermissions.join(', ')}`);
-                }
-
-                EnhancedLogger.info('BLEConnectionManager', 'Android permissions granted successfully');
-                this.completeOperation(permissionOperationId);
-            } catch (error) {
-                const errorMessage = error instanceof Error ? error.message : 'Unknown permission error';
-                EnhancedLogger.error('BLEConnectionManager', 'Permission request failed', error as Error);
-                this.completeOperation(permissionOperationId, error as Error);
-                throw new Error(`Permission request failed: ${errorMessage}`);
-            }
+        EnhancedLogger.debug('BLEConnectionManager', 'Requesting Android permissions');
+        const permissions = [
+            PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+            PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+            PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+        ];
+        const granted = await PermissionsAndroid.requestMultiple(permissions);
+        EnhancedLogger.debug('BLEConnectionManager', 'Permissions result', { granted });
+        if (Object.values(granted).some((status) => status !== PermissionsAndroid.RESULTS.GRANTED)) {
+            throw new Error('Required Android permissions not granted');
         }
+        EnhancedLogger.info('BLEConnectionManager', 'Android permissions granted');
     }
 
+    private async waitForBluetoothState(): Promise<void> {
+        EnhancedLogger.debug('BLEConnectionManager', 'Waiting for Bluetooth state');
+        const state = await this.bleManager.state();
+        EnhancedLogger.debug('BLEConnectionManager', 'Current Bluetooth state', { state });
+        if (state !== State.PoweredOn) {
+            EnhancedLogger.debug('BLEConnectionManager', 'Bluetooth not powered on, waiting for state change');
+            await new Promise<void>((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                    EnhancedLogger.error('BLEConnectionManager', 'Bluetooth state timeout');
+                    reject(new Error('Bluetooth state timeout'));
+                }, 10000);
+                const subscription = this.bleManager.onStateChange((newState) => {
+                    EnhancedLogger.debug('BLEConnectionManager', 'Bluetooth state changed', { newState });
+                    if (newState === State.PoweredOn) {
+                        clearTimeout(timeout);
+                        subscription.remove();
+                        resolve();
+                    }
+                }, true);
+            });
+        }
+        EnhancedLogger.debug('BLEConnectionManager', 'Bluetooth is powered on');
+    }
+
+    // In BLEConnectionManager.ts
 async scanForDevices(): Promise<Device[]> {
-    if (!this._isInitialized || !this.bleManager) {
+    EnhancedLogger.debug('BLEConnectionManager', 'Scanning for devices');
+    if (!this.isInitialized) {
         throw new Error('BLE Manager not initialized');
     }
 
-    const scanOperationId = this.generateTransactionId();
-    this.trackOperation('device_scan', scanOperationId);
-
-    EnhancedLogger.info('BLEConnectionManager', 'Starting device scan', {
-        timeout: this.DEFAULT_TIMEOUT,
-        operationId: scanOperationId
-    });
-
-    const scanStartTime = Date.now();
-    const devices: Device[] = [];
-    const seenDevices = new Set<string>();
-
-    return new Promise<Device[]>((resolve, reject) => {
-        let timeoutHandle: NodeJS.Timeout;
-        let hasCompleted = false;
-
-        const completeScan = (error?: Error) => {
-            if (hasCompleted) return;
-            hasCompleted = true;
-
-            this.bleManager?.stopDeviceScan();
-            const scanDuration = Date.now() - scanStartTime;
-
-            if (error) {
-                EnhancedLogger.error('BLEConnectionManager', 'Scan failed', error, {
-                    duration: `${scanDuration}ms`,
-                    devicesFound: devices.length,
-                    operationId: scanOperationId
-                });
-                this.completeOperation(scanOperationId, error);
-                reject(error);
-            } else {
-                EnhancedLogger.info('BLEConnectionManager', 'Scan completed', {
-                    duration: `${scanDuration}ms`,
-                    devicesFound: devices.length,
-                    operationId: scanOperationId
-                });
-                this.completeOperation(scanOperationId);
-                resolve(devices);
-            }
-        };
-
-        timeoutHandle = setTimeout(() => {
-            if (devices.length > 0) {
-                completeScan();
-            } else {
-                completeScan(new Error('No devices found during scan'));
-            }
-        }, this.DEFAULT_TIMEOUT);
+    return new Promise((resolve, reject) => {
+        const devices: Device[] = [];
+        const timeout = setTimeout(() => {
+            EnhancedLogger.debug('BLEConnectionManager', 'Scan timeout reached');
+            this.bleManager.stopDeviceScan();
+            resolve(devices);
+        }, this.options.scanTimeout || DEFAULT_SCAN_TIMEOUT);
 
         try {
-            this.bleManager.startDeviceScan(
-                null,
-                { allowDuplicates: false },
-                (error, device) => {
-                    if (error) {
-                        clearTimeout(timeoutHandle);
-                        completeScan(error);
-                        return;
-                    }
-
-                    if (device && device.name && device.name.includes('FrameInk47')) {
-                        const deviceId = device.id;
-                        
-                        if (!seenDevices.has(deviceId)) {
-                            seenDevices.add(deviceId);
-                            devices.push(device);
-                            
-                            EnhancedLogger.debug('BLEConnectionManager', 'Device found', {
-                                id: device.id,
-                                name: device.name,
-                                rssi: formatRSSI(device.rssi),
-                                manufacturerData: device.manufacturerData 
-                                    ? Buffer.from(device.manufacturerData, 'base64').toString('hex')
-                                    : undefined,
-                                operationId: scanOperationId
-                            });
-
-                            clearTimeout(timeoutHandle);
-                            completeScan();
-                        }
-                    }
+            EnhancedLogger.debug('BLEConnectionManager', 'Starting device scan');
+            this.bleManager.startDeviceScan(null, null, (error, device) => {
+                if (error) {
+                    EnhancedLogger.error('BLEConnectionManager', 'Scan error', error);
+                    clearTimeout(timeout);
+                    this.bleManager.stopDeviceScan();
+                    reject(error);
+                    return;
                 }
-            );
-        } catch (error) {
-            clearTimeout(timeoutHandle);
-            completeScan(error as Error);
+
+                if (device) {
+                    EnhancedLogger.info('BLEConnectionManager', 'Discovered device', {
+                        id: device.id,
+                        name: device.name,
+                        localName: device.localName,
+                        rssi: device.rssi,
+                        manufacturerData: device.manufacturerData,
+                        serviceUUIDs: device.serviceUUIDs,
+                        mtu: device.mtu,
+                    });
+                    devices.push(device);
+                }
+            });
+        } catch (err) {
+            const errorMessage = err instanceof Error ? err.message : 'Unknown error during scan';
+            EnhancedLogger.error('BLEConnectionManager', 'Error starting scan', {
+                error: errorMessage,
+                stack: err instanceof Error ? err.stack : undefined,
+            });
+            clearTimeout(timeout);
+            reject(new Error(`Scan failed: ${errorMessage}`));
         }
     });
 }
 
 async connectToDevice(device: Device): Promise<void> {
-    if (!this._isInitialized) {
-        throw new Error('BLE Manager not initialized');
-    }
+    EnhancedLogger.debug('BLEConnectionManager', 'Connect to device method called', { 
+        deviceId: device.id,
+        deviceName: device.name,
+        deviceLocalName: device.localName,
+        rssi: device.rssi
+    });
 
     if (this.connectionState.connecting || this.connectionState.connected) {
-        EnhancedLogger.warn('BLEConnectionManager', 'Connection attempt while already connected/connecting', {
-            currentState: this.connectionState
-        });
-        return;
+        EnhancedLogger.warn('BLEConnectionManager', 'Already connecting or connected to a device');
+        throw new Error('Already connecting or connected to a device');
     }
 
-    const connectOperationId = this.generateTransactionId();
-    this.trackOperation('device_connection', connectOperationId);
-    
     this.connectionState.connecting = true;
     this.connectionState.connectionAttempts++;
-    let attempts = 0;
-    const connectStartTime = Date.now();
+    
+    try {
+        EnhancedLogger.debug('BLEConnectionManager', 'Attempting to connect to device', { 
+            deviceId: device.id,
+            deviceName: device.name,
+            deviceLocalName: device.localName,
+            attempt: this.connectionState.connectionAttempts
+        });
 
-    while (attempts < this.MAX_RETRIES) {
-        try {
-            EnhancedLogger.info('BLEConnectionManager', 'Starting connection attempt', {
-                deviceId: device.id,
-                attempt: attempts + 1,
-                totalAttempts: this.connectionState.connectionAttempts
-            });
+        const isConnectable = await device.isConnectable();
+        if (!isConnectable) {
+            throw new Error('Device is not connectable');
+        }
 
-            const connectedDevice = await device.connect({
-                timeout: this.DEFAULT_TIMEOUT,
-                requestMTU: this.TARGET_MTU
-            });
+        EnhancedLogger.debug('BLEConnectionManager', 'Calling device.connect()');
+        const connectedDevice = await device.connect({
+            timeout: this.options.connectionTimeout || 10000,
+        });
+        EnhancedLogger.debug('BLEConnectionManager', 'Device.connect() completed successfully');
 
-            await this.setupConnection(connectedDevice);
-            this.device = connectedDevice;
+        EnhancedLogger.debug('BLEConnectionManager', 'Device connected, requesting MTU change');
+        const requestedMTU = this.options.mtu || DEFAULT_MTU;
+        const newMTU = await connectedDevice.requestMTU(requestedMTU);
+        EnhancedLogger.debug('BLEConnectionManager', 'MTU changed', { requestedMTU, newMTU });
 
-            const connectDuration = Date.now() - connectStartTime;
-            EnhancedLogger.info('BLEConnectionManager', 'Connection successful', {
-                duration: `${connectDuration}ms`,
-                metrics: this.deviceMetrics
-            });
+        EnhancedLogger.debug('BLEConnectionManager', 'Discovering services and characteristics');
+        await connectedDevice.discoverAllServicesAndCharacteristics();
 
-            this.completeOperation(connectOperationId);
-            return;
+        this.connectedDevice = connectedDevice;
+        this.connectionState = {
+            connected: true,
+            connecting: false,
+            error: null,
+            connectionAttempts: this.connectionState.connectionAttempts,
+        };
+        EnhancedLogger.info('BLEConnectionManager', 'Device connected successfully', {
+            id: device.id,
+            name: device.name,
+            localName: device.localName,
+        });
+    } catch (error) {
+        this.connectionState.connecting = false;
+        this.connectionState.error = (error as Error).message;
+        EnhancedLogger.error('BLEConnectionManager', 'Connection failed', {
+            error: (error as Error).message,
+            stack: (error as Error).stack,
+            deviceId: device.id,
+            deviceName: device.name,
+            deviceLocalName: device.localName
+        });
+        throw error;
+    }
+}
 
-        } catch (error) {
-            attempts++;
-            const errorDetails = {
-                attempt: attempts,
-                deviceId: device.id,
-                maxRetries: this.MAX_RETRIES,
-                error: error instanceof Error ? {
-                    name: error.name,
-                    message: error.message,
-                    stack: error.stack
-                } : error
-            };
-
-            if (attempts === this.MAX_RETRIES) {
+    async disconnect(): Promise<void> {
+        EnhancedLogger.debug('BLEConnectionManager', 'Disconnect method called');
+        if (this.connectedDevice) {
+            try {
+                EnhancedLogger.debug('BLEConnectionManager', 'Attempting to disconnect from device', { 
+                    deviceId: this.connectedDevice.id,
+                    deviceName: this.connectedDevice.name,
+                    deviceLocalName: this.connectedDevice.localName
+                });
+                await this.connectedDevice.cancelConnection();
+                this.connectedDevice = null;
                 this.connectionState = {
                     connected: false,
                     connecting: false,
-                    error: error instanceof Error ? error.message : String(error),
-                    connectionAttempts: this.connectionState.connectionAttempts
+                    error: null,
+                    connectionAttempts: this.connectionState.connectionAttempts,
                 };
-                this.completeOperation(connectOperationId, error as Error);
+                EnhancedLogger.info('BLEConnectionManager', 'Device disconnected successfully');
+            } catch (error) {
+                EnhancedLogger.error('BLEConnectionManager', 'Error during disconnect', error as Error);
                 throw error;
-            } else {
-                EnhancedLogger.warn('BLEConnectionManager', 'Connection attempt failed, retrying', errorDetails);
-                await delay(1000 * attempts); // Exponential backoff
             }
+        } else {
+            EnhancedLogger.warn('BLEConnectionManager', 'Disconnect called but no device was connected');
         }
     }
-}
 
-private async setupConnection(device: Device): Promise<void> {
-    const setupStartTime = Date.now();
+    async getDiagnostics(): Promise<ConnectionDiagnostics> {
+        EnhancedLogger.debug('BLEConnectionManager', 'Get diagnostics method called');
+        if (!this.connectedDevice) {
+            EnhancedLogger.error('BLEConnectionManager', 'No device connected for diagnostics');
+            throw new Error('No device connected');
+        }
 
-    // Request MTU change if on Android
-    if (Platform.OS === 'android') {
         try {
-            const newMTU = await device.requestMTU(this.TARGET_MTU);
-            EnhancedLogger.debug('BLEConnectionManager', 'MTU negotiated', { newMTU });
-            
+            EnhancedLogger.debug('BLEConnectionManager', 'Reading RSSI');
+            const rssi = await this.connectedDevice.readRSSI();
+            const diagnostics: ConnectionDiagnostics = {
+                rssi,
+                mtu: this.connectedDevice.mtu || DEFAULT_MTU,
+                connectionTime: Date.now() - (this.connectionState.lastConnectedTime || Date.now()),
+                totalOperations: this.operationTimings.length,
+                completedOperations: this.operationTimings.filter((op) => op.status === 'completed').length,
+                failedOperations: this.operationTimings.filter((op) => op.status === 'failed').length,
+                averageOperationTime: this.calculateAverageOperationTime(),
+                connectionAttempts: this.connectionState.connectionAttempts,
+                lastError: this.connectionState.error,
+            };
+            EnhancedLogger.debug('BLEConnectionManager', 'Diagnostics collected', diagnostics);
+            return diagnostics;
         } catch (error) {
-            EnhancedLogger.warn('BLEConnectionManager', 'MTU negotiation failed', { 
-                error,
-                fallbackMTU: 23
-            });
-        }
-    }
-
-    // Update connection state
-    this.connectionState = {
-        connected: true,
-        connecting: false,
-        error: null,
-        lastConnectedTime: Date.now(),
-        connectionAttempts: this.connectionState.connectionAttempts
-    };
-
-    // Setup connection monitoring
-    this.startConnectionMonitoring(device);
-
-    EnhancedLogger.debug('BLEConnectionManager', 'Connection setup complete', {
-        duration: `${Date.now() - setupStartTime}ms`,
-        deviceId: device.id
-    });
-}
-
-private startConnectionMonitoring(device: Device): void {
-    // Monitor disconnection
-    const disconnectSub = device.onDisconnected((error) => {
-        this.handleDisconnect(error);
-    });
-
-    this.monitoringSubscriptions.push(disconnectSub);
-    this.startDiagnosticsMonitoring();
-}
-
-protected async runConnectionDiagnostics(): Promise<ConnectionDiagnostics> {
-    if (!this.device) {
-        throw new Error('No device connected');
-    }
-
-    const now = Date.now();
-    const rssi = await this.device.readRSSI();
-    const completedOps = this.operationTimings.filter(t => t.status === 'completed');
-    const failedOps = this.operationTimings.filter(t => t.status === 'failed');
-
-    return {
-        rssi,
-        mtu: this.TARGET_MTU,
-        connectionTime: now - (this.connectionState.lastConnectedTime || now),
-        totalOperations: this.operationTimings.length,
-        completedOperations: completedOps.length,
-        failedOperations: failedOps.length,
-        averageOperationTime: this.calculateAverageOperationTime(),
-        connectionAttempts: this.connectionState.connectionAttempts,
-        lastError: this.connectionState.error
-    };
-}
-
-private handleDisconnect(error?: any): void {
-    EnhancedLogger.info('BLEConnectionManager', 'Device disconnected', {
-        error,
-        deviceId: this.device?.id,
-        connectionDuration: this.connectionState.lastConnectedTime 
-            ? Date.now() - this.connectionState.lastConnectedTime 
-            : 0
-    });
-
-    this.device = null;
-    this.deviceMetrics = null;
-    this.connectionState = {
-        connected: false,
-        connecting: false,
-        error: error ? error.toString() : null,
-        connectionAttempts: this.connectionState.connectionAttempts
-    };
-
-    this.monitoringSubscriptions.forEach(sub => {
-        try {
-            sub.remove();
-        } catch (removeError) {
-            EnhancedLogger.warn('BLEConnectionManager', 'Error removing subscription', {
-                error: removeError
-            });
-        }
-    });
-    this.monitoringSubscriptions = [];
-    this.stopDiagnosticsMonitoring();
-}
-
-async disconnect(): Promise<void> {
-    if (this.device) {
-        const disconnectOperationId = this.generateTransactionId();
-        this.trackOperation('disconnect', disconnectOperationId);
-
-        try {
-            await this.device.cancelConnection();
-            this.completeOperation(disconnectOperationId);
-        } catch (error) {
-            this.completeOperation(disconnectOperationId, error as Error);
+            EnhancedLogger.error('BLEConnectionManager', 'Error getting diagnostics', error as Error);
             throw error;
-        } finally {
-            this.handleDisconnect();
         }
     }
-}
 
-destroy(): void {
-    this.disconnect();
-    this.bleManager?.destroy();
-    this.bleManager = null;
-    this._isInitialized = false;
-    EnhancedLogger.info('BLEConnectionManager', 'Manager destroyed');
-}
+    destroy(): void {
+        EnhancedLogger.debug('BLEConnectionManager', 'Destroy method called');
+        this.bleManager.destroy();
+        this.connectedDevice = null;
+        this.isInitialized = false;
+        EnhancedLogger.info('BLEConnectionManager', 'Manager destroyed');
+    }
 
-// Public getters
-getConnectionState(): ConnectionState {
-    return { ...this.connectionState };
-}
+    getConnectionState(): ConnectionState {
+        EnhancedLogger.debug('BLEConnectionManager', 'Get connection state called', this.connectionState);
+        return { ...this.connectionState };
+    }
 
-getDeviceMetrics(): DeviceConnectionMetrics | null {
-    return this.deviceMetrics ? { ...this.deviceMetrics } : null;
-}
+    getCurrentDevice(): Device | null {
+        EnhancedLogger.debug('BLEConnectionManager', 'Get connected device called', { 
+            deviceId: this.connectedDevice?.id,
+            deviceName: this.connectedDevice?.name,
+            deviceLocalName: this.connectedDevice?.localName
+        });
+        return this.connectedDevice;
+    }
 
-getCurrentDevice(): Device | null {
-    return this.device;
-}
+    async isDeviceConnected(deviceId: string): Promise<boolean> {
+        EnhancedLogger.debug('BLEConnectionManager', 'Is device connected method called', { deviceId });
+        if (!this.isInitialized) {
+            EnhancedLogger.error('BLEConnectionManager', 'BLE Manager not initialized');
+            throw new Error('BLE Manager not initialized');
+        }
+        try {
+            const isConnected = await this.bleManager.isDeviceConnected(deviceId);
+            EnhancedLogger.debug('BLEConnectionManager', 'Device connection status', { deviceId, isConnected });
+            return isConnected;
+        } catch (error) {
+            EnhancedLogger.error('BLEConnectionManager', 'Error checking device connection', error as Error);
+            throw error;
+        }
+    }
+
+    getDeviceMetrics(): DeviceConnectionMetrics | null {
+        EnhancedLogger.debug('BLEConnectionManager', 'Get device metrics called');
+        if (!this.connectedDevice) {
+            return null;
+        }
+        return {
+            rssi: this.connectedDevice.rssi || 0,
+            mtu: this.connectedDevice.mtu || DEFAULT_MTU,
+            signalStrength: this.getSignalStrength(this.connectedDevice.rssi || 0),
+            stability: 'Stable', // This would need to be determined based on connection history
+        };
+    }
+
+    private getSignalStrength(rssi: number): 'Excellent' | 'Good' | 'Fair' | 'Poor' {
+        if (rssi >= -50) return 'Excellent';
+        if (rssi >= -60) return 'Good';
+        if (rssi >= -70) return 'Fair';
+        return 'Poor';
+    }
+
+    protected async runConnectionDiagnostics(): Promise<ConnectionDiagnostics> {
+        return this.getDiagnostics();
+    }
 }

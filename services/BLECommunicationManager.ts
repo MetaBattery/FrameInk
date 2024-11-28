@@ -1,13 +1,17 @@
 // BLECommunicationManager.ts
 
 import { Device, Characteristic } from 'react-native-ble-plx';
-import { Buffer } from 'buffer';
+import base64 from 'react-native-base64';
 import { EnhancedLogger } from './EnhancedLogger';
 import { OperationTracker } from './BLEOperationTracker';
 import { 
     TransferProgress, 
     FileInfo,
-    ConnectionDiagnostics 
+    ConnectionDiagnostics,
+    BLECommands,
+    BLEResponses,
+    StorageSpace,
+    FileTransferMetadata
 } from './BLETypes';
 
 export class BLECommunicationManager extends OperationTracker {
@@ -37,16 +41,22 @@ export class BLECommunicationManager extends OperationTracker {
             EnhancedLogger.debug('BLECommunicationManager', 'Setting up notifications');
             const setupStartTime = Date.now();
 
-            // Discover services and characteristics
+            EnhancedLogger.debug('BLECommunicationManager', 'Discovering services and characteristics');
             await this.device.discoverAllServicesAndCharacteristics();
+            
+            EnhancedLogger.debug('BLECommunicationManager', 'Getting services');
             const services = await this.device.services();
+            EnhancedLogger.debug('BLECommunicationManager', `Found ${services.length} services`);
             
             const service = services.find(s => s.uuid === this.SERVICE_UUID);
             if (!service) {
-                throw new Error('Required service not found');
+                throw new Error(`Required service ${this.SERVICE_UUID} not found`);
             }
 
+            EnhancedLogger.debug('BLECommunicationManager', 'Getting characteristics');
             const characteristics = await service.characteristics();
+            EnhancedLogger.debug('BLECommunicationManager', `Found ${characteristics.length} characteristics`);
+
             this.fileCharacteristic = characteristics.find(c => c.uuid === this.FILE_CHAR_UUID);
             this.commandCharacteristic = characteristics.find(c => c.uuid === this.COMMAND_CHAR_UUID);
 
@@ -54,13 +64,13 @@ export class BLECommunicationManager extends OperationTracker {
                 throw new Error('Required characteristics not found');
             }
 
-            // Setup file notifications
+            EnhancedLogger.debug('BLECommunicationManager', 'Setting up file notifications');
             const fileSub = await this.setupCharacteristicNotification(
                 this.fileCharacteristic,
                 this.handleFileNotification.bind(this)
             );
 
-            // Setup command notifications
+            EnhancedLogger.debug('BLECommunicationManager', 'Setting up command notifications');
             const commandSub = await this.setupCharacteristicNotification(
                 this.commandCharacteristic,
                 this.handleCommandNotification.bind(this)
@@ -85,26 +95,40 @@ export class BLECommunicationManager extends OperationTracker {
         characteristic: Characteristic,
         handler: (data: string) => void
     ): Promise<{ remove: () => void }> {
-        await characteristic.startNotifications();
+        try {
+            EnhancedLogger.debug('BLECommunicationManager', 'Starting notifications', { characteristicUUID: characteristic.uuid });
+            await characteristic.startNotifications();
 
-        const subscription = characteristic.monitor((error, char) => {
-            if (error) {
-                EnhancedLogger.error('BLECommunicationManager', 'Notification error', error as Error, {
-                    characteristicUUID: characteristic.uuid
-                });
-                return;
-            }
+            EnhancedLogger.debug('BLECommunicationManager', 'Setting up monitor', { characteristicUUID: characteristic.uuid });
+            const subscription = characteristic.monitor((error, char) => {
+                if (error) {
+                    EnhancedLogger.error('BLECommunicationManager', 'Notification error', error as Error, {
+                        characteristicUUID: characteristic.uuid
+                    });
+                    return;
+                }
 
-            if (char?.value) {
-                const data = Buffer.from(char.value, 'base64').toString('utf8');
-                handler(data);
-            }
-        });
+                if (char?.value) {
+                    const data = base64.decode(char.value);
+                    EnhancedLogger.debug('BLECommunicationManager', 'Received notification', {
+                        characteristicUUID: characteristic.uuid,
+                        dataLength: data.length
+                    });
+                    handler(data);
+                }
+            });
 
-        return subscription;
+            EnhancedLogger.debug('BLECommunicationManager', 'Notification setup complete', { characteristicUUID: characteristic.uuid });
+            return subscription;
+        } catch (error) {
+            EnhancedLogger.error('BLECommunicationManager', 'Failed to setup characteristic notification', error as Error, {
+                characteristicUUID: characteristic.uuid
+            });
+            throw error;
+        }
     }
 
-    async writeCommand(command: string): Promise<void> {
+    async writeCommand(command: BLECommands | string): Promise<void> {
         if (!this.commandCharacteristic) {
             throw new Error('Command characteristic not initialized');
         }
@@ -114,9 +138,9 @@ export class BLECommunicationManager extends OperationTracker {
 
         try {
             EnhancedLogger.debug('BLECommunicationManager', 'Writing command', { command });
-            const data = Buffer.from(command).toString('base64');
+            const encodedCommand = base64.encode(command);
             
-            await this.commandCharacteristic.writeWithResponse(data);
+            await this.commandCharacteristic.writeWithResponse(encodedCommand);
             
             EnhancedLogger.debug('BLECommunicationManager', 'Command written successfully', {
                 command,
@@ -138,7 +162,7 @@ export class BLECommunicationManager extends OperationTracker {
         try {
             EnhancedLogger.info('BLECommunicationManager', 'Starting file list operation');
             
-            await this.writeCommand('LIST');
+            await this.writeCommand(BLECommands.LIST);
             
             return new Promise<FileInfo[]>((resolve, reject) => {
                 let fileListData = '';
@@ -146,9 +170,11 @@ export class BLECommunicationManager extends OperationTracker {
 
                 const fileNotificationHandler = (data: string) => {
                     fileListData += data;
+                    EnhancedLogger.debug('BLECommunicationManager', 'Received file list data', { dataLength: data.length });
                     if (fileListData.includes('END_LIST')) {
                         clearTimeout(timeoutHandle);
                         const files = this.parseFileList(fileListData);
+                        EnhancedLogger.info('BLECommunicationManager', 'File list received', { fileCount: files.length });
                         this.completeOperation(listOperationId);
                         resolve(files);
                     }
@@ -156,25 +182,35 @@ export class BLECommunicationManager extends OperationTracker {
 
                 timeoutHandle = setTimeout(() => {
                     const error = new Error('File list operation timed out');
+                    EnhancedLogger.error('BLECommunicationManager', 'File list operation timed out');
                     this.completeOperation(listOperationId, error);
                     reject(error);
                 }, 10000);
 
-                this.fileCharacteristic?.monitor((error, characteristic) => {
-                    if (error) {
-                        clearTimeout(timeoutHandle);
-                        this.completeOperation(listOperationId, error as Error);
-                        reject(error);
-                        return;
-                    }
+                if (this.fileCharacteristic) {
+                    this.fileCharacteristic.monitor((error, characteristic) => {
+                        if (error) {
+                            clearTimeout(timeoutHandle);
+                            EnhancedLogger.error('BLECommunicationManager', 'File characteristic monitor error', error as Error);
+                            this.completeOperation(listOperationId, error as Error);
+                            reject(error);
+                            return;
+                        }
 
-                    if (characteristic?.value) {
-                        const data = Buffer.from(characteristic.value, 'base64').toString('utf8');
-                        fileNotificationHandler(data);
-                    }
-                });
+                        if (characteristic?.value) {
+                            const data = base64.decode(characteristic.value);
+                            fileNotificationHandler(data);
+                        }
+                    });
+                } else {
+                    const error = new Error('File characteristic not initialized');
+                    EnhancedLogger.error('BLECommunicationManager', 'File characteristic not initialized');
+                    this.completeOperation(listOperationId, error);
+                    reject(error);
+                }
             });
         } catch (error) {
+            EnhancedLogger.error('BLECommunicationManager', 'List files operation failed', error as Error);
             this.completeOperation(listOperationId, error as Error);
             throw error;
         }
@@ -205,44 +241,172 @@ export class BLECommunicationManager extends OperationTracker {
         try {
             EnhancedLogger.info('BLECommunicationManager', 'Starting file deletion', { filename });
             
-            await this.writeCommand(`DELETE ${filename}`);
+            await this.writeCommand(`${BLECommands.DELETE}:${filename}`);
             
             return new Promise<boolean>((resolve, reject) => {
                 const timeoutHandle = setTimeout(() => {
                     const error = new Error('File deletion timed out');
+                    EnhancedLogger.error('BLECommunicationManager', 'File deletion timed out', { filename });
                     this.completeOperation(deleteOperationId, error);
                     reject(error);
                 }, 5000);
 
-                this.commandCharacteristic?.monitor((error, characteristic) => {
-                    if (error) {
-                        clearTimeout(timeoutHandle);
-                        this.completeOperation(deleteOperationId, error as Error);
-                        reject(error);
-                        return;
-                    }
+                if (this.commandCharacteristic) {
+                    this.commandCharacteristic.monitor((error, characteristic) => {
+                        if (error) {
+                            clearTimeout(timeoutHandle);
+                            EnhancedLogger.error('BLECommunicationManager', 'Command characteristic monitor error', error as Error);
+                            this.completeOperation(deleteOperationId, error as Error);
+                            reject(error);
+                            return;
+                        }
 
-                    if (characteristic?.value) {
-                        const response = Buffer.from(characteristic.value, 'base64').toString('utf8');
-                        clearTimeout(timeoutHandle);
-                        const success = response === 'DELETE_OK';
-                        this.completeOperation(deleteOperationId);
-                        resolve(success);
-                    }
-                });
+                        if (characteristic?.value) {
+                            const response = base64.decode(characteristic.value);
+                            clearTimeout(timeoutHandle);
+                            const success = response === BLEResponses.OK;
+                            EnhancedLogger.info('BLECommunicationManager', 'File deletion response', { success, filename });
+                            this.completeOperation(deleteOperationId);
+                            resolve(success);
+                        }
+                    });
+                } else {
+                    const error = new Error('Command characteristic not initialized');
+                    EnhancedLogger.error('BLECommunicationManager', 'Command characteristic not initialized');
+                    this.completeOperation(deleteOperationId, error);
+                    reject(error);
+                }
             });
         } catch (error) {
+            EnhancedLogger.error('BLECommunicationManager', 'Delete file operation failed', error as Error);
             this.completeOperation(deleteOperationId, error as Error);
             throw error;
         }
     }
 
+    async getStorageSpace(): Promise<StorageSpace> {
+        const spaceOperationId = this.generateTransactionId();
+        this.trackOperation('get_storage_space', spaceOperationId);
+
+        try {
+            EnhancedLogger.info('BLECommunicationManager', 'Retrieving storage space information');
+            
+            await this.writeCommand(BLECommands.SPACE);
+            
+            return new Promise<StorageSpace>((resolve, reject) => {
+                const timeoutHandle = setTimeout(() => {
+                    const error = new Error('Storage space retrieval timed out');
+                    EnhancedLogger.error('BLECommunicationManager', 'Storage space retrieval timed out');
+                    this.completeOperation(spaceOperationId, error);
+                    reject(error);
+                }, 5000);
+
+                if (this.commandCharacteristic) {
+                    this.commandCharacteristic.monitor((error, characteristic) => {
+                        if (error) {
+                            clearTimeout(timeoutHandle);
+                            EnhancedLogger.error('BLECommunicationManager', 'Command characteristic monitor error', error as Error);
+                            this.completeOperation(spaceOperationId, error as Error);
+                            reject(error);
+                            return;
+                        }
+
+                        if (characteristic?.value) {
+                            const response = base64.decode(characteristic.value);
+                            clearTimeout(timeoutHandle);
+                            const [total, used] = response.split(',').map(Number);
+                            const storageSpace: StorageSpace = { total, used };
+                            EnhancedLogger.info('BLECommunicationManager', 'Storage space retrieved', storageSpace);
+                            this.completeOperation(spaceOperationId);
+                            resolve(storageSpace);
+                        }
+                    });
+                } else {
+                    const error = new Error('Command characteristic not initialized');
+                    EnhancedLogger.error('BLECommunicationManager', 'Command characteristic not initialized');
+                    this.completeOperation(spaceOperationId, error);
+                    reject(error);
+                }
+            });
+        } catch (error) {
+            EnhancedLogger.error('BLECommunicationManager', 'Get storage space operation failed', error as Error);
+            this.completeOperation(spaceOperationId, error as Error);
+            throw error;
+        }
+    }
+
+    async transferFile(fileData: ArrayBuffer, filename: string): Promise<void> {
+        const transferOperationId = this.generateTransactionId();
+        this.trackOperation('file_transfer', transferOperationId);
+
+        try {
+            EnhancedLogger.info('BLECommunicationManager', 'Starting file transfer', { filename, size: fileData.byteLength });
+            
+            // Start file transfer
+            await this.writeCommand(`${BLECommands.START}:${filename}`);
+            await this.waitForResponse(BLEResponses.READY);
+
+            // Transfer file in chunks
+            const totalChunks = Math.ceil(fileData.byteLength / this.CHUNK_SIZE);
+            for (let i = 0; i < totalChunks; i++) {
+                const chunk = fileData.slice(i * this.CHUNK_SIZE, (i + 1) * this.CHUNK_SIZE);
+                const encodedChunk = base64.encodeFromByteArray(new Uint8Array(chunk));
+                await this.writeCommand(encodedChunk);
+                await this.waitForResponse(BLEResponses.OK);
+                
+                this.updateTransferProgress((i + 1) * this.CHUNK_SIZE, fileData.byteLength);
+            }
+
+            // End file transfer
+            await this.writeCommand(BLECommands.END);
+            await this.waitForResponse(BLEResponses.DONE);
+
+            EnhancedLogger.info('BLECommunicationManager', 'File transfer completed', { filename });
+            this.completeOperation(transferOperationId);
+        } catch (error) {
+            EnhancedLogger.error('BLECommunicationManager', 'File transfer failed', error as Error);
+            this.completeOperation(transferOperationId, error as Error);
+            throw error;
+        }
+    }
+
+    private async waitForResponse(expectedResponse: BLEResponses, timeout: number = 5000): Promise<void> {
+        return new Promise<void>((resolve, reject) => {
+            const timeoutHandle = setTimeout(() => {
+                reject(new Error(`Timeout waiting for response: ${expectedResponse}`));
+            }, timeout);
+
+            if (this.commandCharacteristic) {
+                this.commandCharacteristic.monitor((error, characteristic) => {
+                    if (error) {
+                        clearTimeout(timeoutHandle);
+                        reject(error);
+                        return;
+                    }
+
+                    if (characteristic?.value) {
+                        const response = base64.decode(characteristic.value);
+                        if (response === expectedResponse) {
+                            clearTimeout(timeoutHandle);
+                            resolve();
+                        }
+                    }
+                });
+            } else {
+                clearTimeout(timeoutHandle);
+                reject(new Error('Command characteristic not initialized'));
+            }
+        });
+    }
+
     addTransferListener(callback: (progress: TransferProgress) => void): void {
         this.transferListeners.push(callback);
+        EnhancedLogger.debug('BLECommunicationManager', 'Transfer listener added', { listenerCount: this.transferListeners.length });
     }
 
     removeTransferListener(callback: (progress: TransferProgress) => void): void {
         this.transferListeners = this.transferListeners.filter(listener => listener !== callback);
+        EnhancedLogger.debug('BLECommunicationManager', 'Transfer listener removed', { listenerCount: this.transferListeners.length });
     }
 
     private handleFileNotification(data: string): void {
@@ -253,11 +417,11 @@ export class BLECommunicationManager extends OperationTracker {
                 dataLength: data.length
             });
 
-            // Process file data according to your protocol
-            // This is just an example:
             if (data.startsWith('TRANSFER:')) {
                 const [, bytesTransferred, totalBytes] = data.split(':');
                 this.updateTransferProgress(parseInt(bytesTransferred), parseInt(totalBytes));
+            } else {
+                EnhancedLogger.debug('BLECommunicationManager', 'Unhandled file notification', { data });
             }
         } catch (error) {
             EnhancedLogger.error('BLECommunicationManager', 'Error handling file notification', error as Error);
@@ -272,15 +436,24 @@ export class BLECommunicationManager extends OperationTracker {
                 command: data
             });
 
-            // Process command according to your protocol
             switch (data) {
-                case 'READY':
-                    // Handle ready state
+                case BLEResponses.READY:
+                    EnhancedLogger.info('BLECommunicationManager', 'Device is ready');
                     break;
-                case 'BUSY':
-                    // Handle busy state
+                case BLEResponses.OK:
+                    EnhancedLogger.info('BLECommunicationManager', 'Operation successful');
                     break;
-                // Add other command handlers
+                case BLEResponses.FAIL:
+                    EnhancedLogger.warn('BLECommunicationManager', 'Operation failed');
+                    break;
+                case BLEResponses.ERROR:
+                    EnhancedLogger.error('BLECommunicationManager', 'Device reported an error');
+                    break;
+                case BLEResponses.DONE:
+                    EnhancedLogger.info('BLECommunicationManager', 'Operation completed');
+                    break;
+                default:
+                    EnhancedLogger.debug('BLECommunicationManager', 'Unhandled command notification', { data });
             }
         } catch (error) {
             EnhancedLogger.error('BLECommunicationManager', 'Error handling command notification', error as Error);
@@ -297,6 +470,11 @@ export class BLECommunicationManager extends OperationTracker {
 
         this.transferProgress = progress;
         this.notifyTransferListeners(progress);
+        EnhancedLogger.debug('BLECommunicationManager', 'Transfer progress updated', { 
+            bytesTransferred, 
+            totalBytes, 
+            currentSpeed: progress.currentSpeed 
+        });
     }
 
     private calculateTransferSpeed(bytesTransferred: number): number {
@@ -316,11 +494,31 @@ export class BLECommunicationManager extends OperationTracker {
     }
 
     protected async runConnectionDiagnostics(): Promise<ConnectionDiagnostics> {
-        // Implement diagnostics specific to communication
-        throw new Error('Method not implemented.');
+        // This method should be implemented based on specific requirements
+        // Here's a placeholder implementation
+        const diagnostics: ConnectionDiagnostics = {
+            rssi: await this.device.readRSSI(),
+            mtu: (await this.device.mtu()) || 0,
+            connectionTime: 0, // This should be tracked from the moment of connection
+            totalOperations: this.operationTimings.length,
+            completedOperations: this.operationTimings.filter(op => op.status === 'completed').length,
+            failedOperations: this.operationTimings.filter(op => op.status === 'failed').length,
+            averageOperationTime: this.calculateAverageOperationTime(),
+            connectionAttempts: 1, // This should be tracked and incremented on each connection attempt
+            lastError: this.operationTimings.find(op => op.status === 'failed')?.error?.message || null,
+            fileTransfers: {
+                total: this.operationTimings.filter(op => op.type === 'file_transfer').length,
+                successful: this.operationTimings.filter(op => op.type === 'file_transfer' && op.status === 'completed').length,
+                failed: this.operationTimings.filter(op => op.type === 'file_transfer' && op.status === 'failed').length,
+                averageSpeed: 0 // This should be calculated based on completed file transfers
+            }
+        };
+
+        return diagnostics;
     }
 
     cleanup(): void {
+        EnhancedLogger.debug('BLECommunicationManager', 'Starting cleanup');
         this.subscriptions.forEach(sub => {
             try {
                 sub.remove();
@@ -332,5 +530,6 @@ export class BLECommunicationManager extends OperationTracker {
         });
         this.subscriptions = [];
         this.transferListeners = [];
+        EnhancedLogger.info('BLECommunicationManager', 'Cleanup completed');
     }
 }
