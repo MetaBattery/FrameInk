@@ -1,12 +1,8 @@
-// app/(tabs)/library.tsx
-
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   FlatList,
-  Dimensions,
   TouchableOpacity,
   Modal,
   ScrollView,
@@ -14,6 +10,8 @@ import {
   Image,
   Platform,
   StatusBar,
+  StyleSheet,
+  Dimensions,
 } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import {
@@ -30,11 +28,10 @@ import {
   ProgressBar,
 } from 'react-native-paper';
 import { useFocusEffect } from '@react-navigation/native';
-import { logger } from '../../services/logger';
-import { getBleManager, TransferProgress } from '../../services/BLEManager';
-import { Buffer } from 'buffer';
+import { EnhancedLogger } from '../../services/EnhancedLogger';
+import { sharedBLEConnectionManager } from '../../services/BLEConnectionManager';
+import { BLECommsManager } from '../../services/BLECommsManager';
 
-// Types
 interface ProcessedImage {
   filename: string;
   path: string;
@@ -55,7 +52,12 @@ interface SortOption {
 
 export default function LibraryScreen() {
   const theme = useTheme();
-  const styles = makeStyles(theme.colors);
+  // Memoize styles so they are not recreated on every render.
+  const styles = useMemo(() => makeStyles(theme.colors), [theme.colors]);
+
+  // Use the shared BLE connection manager.
+  const [connectionManager] = useState(() => sharedBLEConnectionManager);
+  const [commsManager, setCommsManager] = useState<BLECommsManager | null>(null);
 
   const [images, setImages] = useState<ProcessedImage[]>([]);
   const [loading, setLoading] = useState(true);
@@ -65,7 +67,7 @@ export default function LibraryScreen() {
   const [newFileName, setNewFileName] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [refreshTrigger, setRefreshTrigger] = useState(0);
-  const [transferProgress, setTransferProgress] = useState<TransferProgress | null>(null);
+  const [transferProgress, setTransferProgress] = useState<{ bytesTransferred: number; totalBytes: number } | null>(null);
   const [isTransferring, setIsTransferring] = useState(false);
   const [sortOption, setSortOption] = useState<SortOption>({
     label: 'Newest',
@@ -77,124 +79,81 @@ export default function LibraryScreen() {
     useCallback(() => {
       loadProcessedImages();
 
-      // Set up transfer progress listener
-      const setupTransferListener = async () => {
+      const setupBLEManagers = async () => {
         try {
-          const bleManager = await getBleManager();
-          bleManager.addTransferListener((progress) => {
-            setTransferProgress(progress.totalBytes > 0 ? progress : null);
-            setIsTransferring(progress.totalBytes > 0);
-          });
+          const device = connectionManager.getConnectedDevice();
+          if (device) {
+            const newCommsManager = new BLECommsManager(device);
+            setCommsManager(newCommsManager);
+          }
         } catch (error) {
-          logger.error('Library', 'Failed to setup transfer listener', error);
+          EnhancedLogger.error('Library', 'Failed to setup BLE managers', error);
         }
       };
 
-      setupTransferListener();
+      setupBLEManagers();
 
-      // Cleanup
       return () => {
-        const cleanup = async () => {
-          try {
-            const bleManager = await getBleManager();
-            bleManager.removeTransferListener((progress) => {
-              setTransferProgress(progress.totalBytes > 0 ? progress : null);
-            });
-          } catch (error) {
-            logger.error('Library', 'Failed to cleanup transfer listener', error);
-          }
-        };
-        cleanup();
+        setCommsManager(null);
       };
     }, [refreshTrigger])
   );
+
+  // Helper to get image dimensions from a URI.
+  const getImageDimensions = (uri: string): Promise<{ width: number; height: number }> =>
+    new Promise((resolve, reject) => {
+      Image.getSize(
+        uri,
+        (width, height) => resolve({ width, height }),
+        (error) => {
+          EnhancedLogger.error('Library', 'Error getting image size', error);
+          resolve({ width: 0, height: 0 });
+        }
+      );
+    });
 
   const loadProcessedImages = async () => {
     try {
       setLoading(true);
       const directory = `${FileSystem.documentDirectory}processed_images/`;
-
       const dirInfo = await FileSystem.getInfoAsync(directory);
       if (!dirInfo.exists) {
         setImages([]);
-        setLoading(false);
         return;
       }
-
       const files = await FileSystem.readDirectoryAsync(directory);
-      const headerFiles = files.filter((file) => file.endsWith('.h'));
+      // Filter for .bin files—the new processed image format.
+      const processedFiles = files.filter((file) => file.endsWith('.bin'));
       const processedImages: ProcessedImage[] = [];
 
-      for (const file of headerFiles) {
+      for (const file of processedFiles) {
         const path = `${directory}${file}`;
-        const content = await FileSystem.readAsStringAsync(path);
+        // Derive preview URI from the file name:
+        // e.g., frameink_portrait_1738396854591.bin  -> frameink_portrait_1738396854591_preview.jpg
+        const previewUri = `${directory}${file.replace('.bin', '_preview.jpg')}`;
+
+        // Extract timestamp from the filename (assuming a pattern like _<timestamp>.bin)
+        const timestampMatch = file.match(/_(\d+)\.bin$/);
+        const timestamp = timestampMatch ? parseInt(timestampMatch[1], 10) : Date.now();
+
+        // Get dimensions from the preview image
+        const dimensions = await getImageDimensions(previewUri);
         const fileInfo = await FileSystem.getInfoAsync(path);
 
-        // Extract preview path from .h file
-        const previewPathMatch = content.match(/preview_path = "([^"]+)"/);
-        let validPreviewPath: string | undefined;
-
-        if (previewPathMatch) {
-          const previewPath = previewPathMatch[1];
-          const previewExists = await FileSystem.getInfoAsync(previewPath);
-
-          if (previewExists.exists) {
-            validPreviewPath = previewPath;
-            logger.debug('Library', 'Preview found', {
-              filename: file,
-              previewPath,
-            });
-          } else {
-            logger.warn('Library', 'Preview path in .h file not found', {
-              filename: file,
-              previewPath,
-            });
-          }
-        } else {
-          // Construct preview path based on filename
-          const possiblePreviewPath = `${directory}${file.replace('.h', '_preview.jpg')}`;
-          const previewExists = await FileSystem.getInfoAsync(possiblePreviewPath);
-          if (previewExists.exists) {
-            validPreviewPath = possiblePreviewPath;
-            logger.debug('Library', 'Preview found by filename', {
-              filename: file,
-              previewPath: validPreviewPath,
-            });
-          } else {
-            logger.warn('Library', 'No preview found', {
-              filename: file,
-              attemptedPaths: [possiblePreviewPath],
-            });
-          }
-        }
-
-        // Extract dimensions
-        const widthMatch = content.match(/image_width = (\d+)/);
-        const heightMatch = content.match(/image_height = (\d+)/);
-
-        if (widthMatch && heightMatch) {
-          const width = parseInt(widthMatch[1]);
-          const height = parseInt(heightMatch[1]);
-
-          const timestampMatch = file.match(/_(\d+)\./);
-          const timestamp = timestampMatch ? parseInt(timestampMatch[1]) : Date.now();
-
-          processedImages.push({
-            filename: file,
-            path,
-            timestamp,
-            dimensions: { width, height },
-            fileSize: fileInfo.size || 0,
-            previewUri: validPreviewPath,
-          });
-        }
+        processedImages.push({
+          filename: file,
+          path,
+          timestamp,
+          dimensions: { width: dimensions.width, height: dimensions.height },
+          fileSize: fileInfo.size || 0,
+          previewUri,
+        });
       }
 
-      // Sort images
       const sortedImages = sortImages(processedImages);
       setImages(sortedImages);
     } catch (error) {
-      logger.error('Library', 'Error loading processed images', error);
+      EnhancedLogger.error('Library', 'Error loading processed images', error);
       Alert.alert('Error', 'Failed to load processed images');
     } finally {
       setLoading(false);
@@ -204,7 +163,6 @@ export default function LibraryScreen() {
   const sortImages = (imageList: ProcessedImage[]) => {
     return [...imageList].sort((a, b) => {
       let valueA: any, valueB: any;
-
       if (sortOption.value.includes('.')) {
         const [obj, prop] = sortOption.value.split('.');
         valueA = (a as any)[obj][prop];
@@ -213,7 +171,6 @@ export default function LibraryScreen() {
         valueA = (a as any)[sortOption.value];
         valueB = (b as any)[sortOption.value];
       }
-
       if (sortOption.ascending) {
         return valueA > valueB ? 1 : -1;
       } else {
@@ -224,10 +181,10 @@ export default function LibraryScreen() {
 
   const handleRename = async (newName: string) => {
     if (!selectedImage || !newName.trim()) return;
-
     try {
       const directory = `${FileSystem.documentDirectory}processed_images/`;
-      const newPath = `${directory}${newName}.h`;
+      // Preserve the .bin extension.
+      const newPath = `${directory}${newName}.bin`;
 
       await FileSystem.moveAsync({
         from: selectedImage.path,
@@ -235,7 +192,7 @@ export default function LibraryScreen() {
       });
 
       if (selectedImage.previewUri) {
-        const newPreviewPath = newPath.replace('.h', '_preview.jpg');
+        const newPreviewPath = newPath.replace('.bin', '_preview.jpg');
         await FileSystem.moveAsync({
           from: selectedImage.previewUri,
           to: newPreviewPath,
@@ -247,86 +204,75 @@ export default function LibraryScreen() {
           img.path === selectedImage.path
             ? {
                 ...img,
-                filename: newName + '.h',
+                filename: newName + '.bin',
                 path: newPath,
                 previewUri: img.previewUri
-                  ? newPath.replace('.h', '_preview.jpg')
+                  ? newPath.replace('.bin', '_preview.jpg')
                   : undefined,
               }
             : img
         )
       );
-
       setRenameDialogVisible(false);
       setSelectedImage(null);
       setNewFileName('');
     } catch (error) {
-      logger.error('Library', 'Error renaming image', error);
+      EnhancedLogger.error('Library', 'Error renaming image', error);
       Alert.alert('Error', 'Failed to rename image');
     }
   };
 
   const handleSendToFrame = async (image: ProcessedImage) => {
     try {
-      const bleManager = await getBleManager();
-      
-      if (!bleManager.isConnected()) {
-        Alert.alert(
-          'Not Connected',
-          'Please connect to your frame first in the Frame Management screen.',
-          [
-            {
-              text: 'OK',
-              onPress: () => setDetailModalVisible(false)
-            }
-          ]
-        );
-        return;
+      // Use the commsManager (shared from the connection) if available.
+      let manager = commsManager;
+      if (!manager) {
+        const device = connectionManager.getConnectedDevice();
+        if (device) {
+          manager = new BLECommsManager(device);
+          setCommsManager(manager);
+        } else {
+          Alert.alert(
+            'Not Connected',
+            'Please connect to your frame first in the Frame Management screen.',
+            [{ text: 'OK', onPress: () => setDetailModalVisible(false) }]
+          );
+          return;
+        }
       }
-
       setIsTransferring(true);
-
-      // Read the file content
       const fileContent = await FileSystem.readAsStringAsync(image.path, {
-        encoding: FileSystem.EncodingType.Base64
+        encoding: FileSystem.EncodingType.Base64,
       });
-
-      // Convert base64 string to Buffer
-      const buffer = Buffer.from(fileContent, 'base64');
-
-      // Send the file
-      const success = await bleManager.uploadFile(image.filename, buffer);
-
-      if (success) {
-        Alert.alert('Success', 'Image sent to frame successfully!');
-        setDetailModalVisible(false);
-      } else {
-        Alert.alert('Error', 'Failed to send image to frame');
-      }
+      const buffer = new Uint8Array(Buffer.from(fileContent, 'base64')).buffer;
+      await manager.transferFile(image.filename, buffer, (progress) => {
+        setTransferProgress(progress);
+      });
+      Alert.alert('Success', 'Image sent to frame successfully!');
+      setDetailModalVisible(false);
     } catch (error) {
-      logger.error('Library', 'Error sending image to frame', error);
+      EnhancedLogger.error('Library', 'Error sending image to frame', error);
       Alert.alert('Error', 'Failed to send image to frame');
     } finally {
       setIsTransferring(false);
+      setTransferProgress(null);
     }
   };
 
   const handleDeleteImage = async (image: ProcessedImage) => {
     try {
       await FileSystem.deleteAsync(image.path);
-
       if (image.previewUri) {
         await FileSystem.deleteAsync(image.previewUri).catch(() => {
           // Ignore error if preview doesn't exist
         });
       }
-
       setImages(images.filter((img) => img.path !== image.path));
       setDetailModalVisible(false);
       setSelectedImage(null);
-      logger.debug('Library', 'Image deleted', { filename: image.filename });
+      EnhancedLogger.debug('Library', 'Image deleted', { filename: image.filename });
     } catch (error) {
-      logger.error('Library', 'Error deleting image', error);
+      EnhancedLogger.error('Library', 'Error deleting image', error);
       Alert.alert('Error', 'Failed to delete image');
     }
   };
@@ -356,12 +302,12 @@ export default function LibraryScreen() {
             <IconButton
               icon="pencil"
               onPress={() => {
-                setNewFileName(selectedImage.filename.replace('.h', ''));
+                // Use the filename without extension for renaming.
+                setNewFileName(selectedImage.filename.replace('.bin', ''));
                 setRenameDialogVisible(true);
               }}
             />
           </View>
-
           <ScrollView contentContainerStyle={styles.scrollContainer}>
             <View style={styles.imageContainer}>
               {selectedImage.previewUri ? (
@@ -378,28 +324,25 @@ export default function LibraryScreen() {
                 </View>
               )}
             </View>
-
             <View style={styles.detailsContainer}>
               <Text style={styles.detailLabel}>Dimensions</Text>
               <Text style={styles.detailValue}>
                 {selectedImage.dimensions.width} × {selectedImage.dimensions.height} pixels
               </Text>
-
               <Text style={styles.detailLabel}>Created</Text>
               <Text style={styles.detailValue}>
                 {new Date(selectedImage.timestamp).toLocaleString()}
               </Text>
-
               <Text style={styles.detailLabel}>File Size</Text>
               <Text style={styles.detailValue}>
                 {(selectedImage.fileSize / 1024).toFixed(2)} KB
               </Text>
             </View>
-
             {transferProgress && (
               <View style={styles.progressContainer}>
                 <Text style={styles.progressText}>
-                  Transferring: {Math.round((transferProgress.bytesTransferred / transferProgress.totalBytes) * 100)}%
+                  Transferring:{' '}
+                  {Math.round((transferProgress.bytesTransferred / transferProgress.totalBytes) * 100)}%
                 </Text>
                 <ProgressBar
                   progress={transferProgress.bytesTransferred / transferProgress.totalBytes}
@@ -409,7 +352,6 @@ export default function LibraryScreen() {
               </View>
             )}
           </ScrollView>
-
           <View style={styles.modalButtons}>
             <Button
               mode="outlined"
@@ -578,7 +520,6 @@ export default function LibraryScreen() {
           </Chip>
         </View>
       </View>
-
       {loading ? (
         <View style={styles.centerContainer}>
           <ActivityIndicator size="large" color={theme.colors.primary} />
@@ -601,7 +542,6 @@ export default function LibraryScreen() {
           onRefresh={refresh}
         />
       )}
-
       {renderImageDetail()}
       {renderRenameDialog()}
     </View>
