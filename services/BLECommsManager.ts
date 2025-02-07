@@ -15,7 +15,7 @@ import { Buffer } from 'buffer'; // Ensure you have the 'buffer' package install
 // Define BLE Service and Characteristic UUIDs for the device.
 const SERVICE_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
 const FILE_CHAR_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
-const COMMAND_CHAR_UUID = 'beb5483f-36e1-4688-b7f5-ea07361b26a8';
+const COMMAND_CHAR_UUID = 'beb5483f-36e1-4688-b7f5-ea07361b26a9';
 
 // Interface for representing file information from the device.
 export interface FileInfo {
@@ -198,7 +198,7 @@ export class BLECommsManager {
       }
   
       // --- Send file data in chunks ---
-      const chunkSize = 512; // adjust based on MTU
+      const chunkSize = 320; // adjust based on MTU
       const totalChunks = Math.ceil(data.byteLength / chunkSize);
   
       for (let i = 0; i < totalChunks; i++) {
