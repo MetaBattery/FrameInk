@@ -171,14 +171,53 @@ export class BLECommsManager {
     });
   }
 
+  
+
+  /**
+   * Helper method to read a response from the FILE characteristic with a timeout.
+   * @param expected The expected string response.
+   * @param timeout The maximum time to wait for the response (in ms).
+   */
+  private async readResponse(expected: string, timeout = 5000): Promise<void> {
+    return new Promise<void>(async (resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`Timeout waiting for response: ${expected}`));
+      }, timeout);
+      try {
+        const response = await this.device.readCharacteristicForService(SERVICE_UUID, FILE_CHAR_UUID);
+        clearTimeout(timer);
+        const responseStr = Buffer.from(response.value!, 'base64').toString('utf-8').trim();
+        if (responseStr === expected) {
+          EnhancedLogger.debug('BLECommsManager', `Received expected response: ${expected}`);
+          resolve();
+        } else {
+          reject(new Error(`Unexpected response: ${responseStr} (expected: ${expected})`));
+        }
+      } catch (error) {
+        clearTimeout(timer);
+        reject(error);
+      }
+    });
+  }
+
   /**
    * Transfers a file to the device in chunks.
+   * 
+   * Improvements:
+   * - Uses a chunk size that matches the negotiated MTU (here set to 120 bytes).
+   * - Adds extra delays after sending the START command and between each chunk.
+   * - Uses a helper (readResponse) to wait for acknowledgments with a timeout.
+   * - Appends a newline delimiter ("\n") after each base64–encoded chunk so that the device
+   *   can reassemble fragmented writes.
+   * 
    * @param filename The name of the file to create on the device.
    * @param data The file data as an ArrayBuffer.
    * @param onProgress Optional callback to report transfer progress.
    */
   async transferFile(filename: string, data: ArrayBuffer, onProgress?: (progress: number) => void): Promise<void> {
-    EnhancedLogger.debug('BLECommsManager', 'Transferring file', { filename, size: data.byteLength });
+    // Adjust chunkSize to match the MTU in use. For MTU = 200, we use a chunk size of 120 bytes.
+    const chunkSize = 120;
+    EnhancedLogger.debug('BLECommsManager', 'Transferring file', { filename, size: data.byteLength, chunkSize });
     try {
       // --- START the file transfer ---
       const startCommand = `START:${filename}`;
@@ -187,36 +226,34 @@ export class BLECommsManager {
         FILE_CHAR_UUID,
         Buffer.from(startCommand).toString('base64')
       );
-      // Wait briefly so that the Arduino can process the command and notify.
-      await new Promise(resolve => setTimeout(resolve, 100));
+      // Increase the delay slightly to give the device time to process the start command.
+      await new Promise(resolve => setTimeout(resolve, 150));
       
-      // Read the response from the device.
-      const response = await this.device.readCharacteristicForService(SERVICE_UUID, FILE_CHAR_UUID);
-      const responseStr = Buffer.from(response.value!, 'base64').toString('utf-8');
-      if (responseStr !== 'READY') {
-        throw new Error('Device not ready for file transfer');
-      }
-  
+      // Wait for the device to signal that it is ready.
+      await this.readResponse('READY', 5000);
+      
       // --- Send file data in chunks ---
-      const chunkSize = 320; // adjust based on MTU
       const totalChunks = Math.ceil(data.byteLength / chunkSize);
   
       for (let i = 0; i < totalChunks; i++) {
         const chunk = new Uint8Array(data.slice(i * chunkSize, (i + 1) * chunkSize));
+        // Encode the chunk to base64 and append a newline delimiter.
+        const base64Chunk = Buffer.from(chunk).toString('base64') + "\n";
         await this.device.writeCharacteristicWithResponseForService(
           SERVICE_UUID,
           FILE_CHAR_UUID,
-          Buffer.from(chunk).toString('base64')
+          Buffer.from(base64Chunk).toString('base64')
         );
   
-        const chunkResponse = await this.device.readCharacteristicForService(SERVICE_UUID, FILE_CHAR_UUID);
-        if (Buffer.from(chunkResponse.value!, 'base64').toString('utf-8') !== 'OK') {
-          throw new Error(`File transfer chunk error at chunk ${i}`);
-        }
+        // Wait for an "OK" response for this chunk.
+        await this.readResponse('OK', 3000);
   
         if (onProgress) {
           onProgress((i + 1) / totalChunks);
         }
+  
+        // A small delay to avoid overloading the device.
+        await new Promise(resolve => setTimeout(resolve, 10));
       }
   
       // --- End file transfer ---
@@ -225,10 +262,7 @@ export class BLECommsManager {
         FILE_CHAR_UUID,
         Buffer.from('END').toString('base64')
       );
-      const endResponse = await this.device.readCharacteristicForService(SERVICE_UUID, FILE_CHAR_UUID);
-      if (Buffer.from(endResponse.value!, 'base64').toString('utf-8') !== 'DONE') {
-        throw new Error('File transfer end error');
-      }
+      await this.readResponse('DONE', 5000);
   
       EnhancedLogger.info('BLECommsManager', 'File transfer completed', { filename, size: data.byteLength });
     } catch (error) {
@@ -237,7 +271,6 @@ export class BLECommsManager {
     }
   }
   
-
   /**
    * Deletes a file on the device.
    * @param filename The name of the file to delete.
@@ -254,7 +287,7 @@ export class BLECommsManager {
 
       // Read response from the device.
       const response = await this.device.readCharacteristicForService(SERVICE_UUID, COMMAND_CHAR_UUID);
-      const value = Buffer.from(response.value!, 'base64').toString('utf-8');
+      const value = Buffer.from(response.value!, 'base64').toString('utf-8').trim();
 
       // Check if deletion was successful.
       if (value !== 'OK') {
@@ -282,7 +315,7 @@ export class BLECommsManager {
       );
 
       const response = await this.device.readCharacteristicForService(SERVICE_UUID, COMMAND_CHAR_UUID);
-      const value = Buffer.from(response.value!, 'base64').toString('utf-8');
+      const value = Buffer.from(response.value!, 'base64').toString('utf-8').trim();
       const [total, used] = value.split(',').map(Number);
 
       EnhancedLogger.info('BLECommsManager', 'Storage space retrieved', { total, used });
@@ -292,4 +325,92 @@ export class BLECommsManager {
       throw error;
     }
   }
+
+/**
+ * Sends WiFi credentials to the device and gets back the IP address.
+ * @param ssid The WiFi SSID to connect to.
+ * @param password The WiFi password.
+ * @returns A promise that resolves to the device's IP address when connected.
+ */
+async connectToWifi(ssid: string, password: string): Promise<string> {
+  EnhancedLogger.debug('BLECommsManager', 'Connecting to WiFi', { ssid });
+  
+  return new Promise<string>(async (resolve, reject) => {
+    let subscription: Subscription | null = null;
+    let timeoutId: NodeJS.Timeout | null = null;
+    let completed = false; // Flag to indicate whether we've already resolved or rejected
+
+    try {
+      // Set up a timeout to fail the connection after 30 seconds.
+      timeoutId = setTimeout(() => {
+        if (subscription) subscription.remove();
+        if (!completed) {
+          completed = true;
+          reject(new Error('WiFi connection timeout'));
+        }
+      }, 30000);
+
+      // Monitor for responses from the device.
+      subscription = this.device.monitorCharacteristicForService(
+        SERVICE_UUID,
+        COMMAND_CHAR_UUID,
+        (error, characteristic) => {
+          if (error) {
+            // If we've already completed and this is just a cancellation error, ignore it.
+            if (completed && error.message && error.message.includes("Operation was cancelled")) {
+              return;
+            }
+            if (timeoutId) clearTimeout(timeoutId);
+            EnhancedLogger.error('BLECommsManager', 'WiFi connection monitor error', error);
+            if (!completed) {
+              completed = true;
+              reject(error);
+            }
+            if (subscription) subscription.remove();
+            return;
+          }
+
+          if (!characteristic?.value) return;
+
+          const rawValue = Buffer.from(characteristic.value, 'base64').toString('utf-8').trim();
+          EnhancedLogger.debug('BLECommsManager', 'Received WiFi response', { response: rawValue });
+
+          if (rawValue.startsWith('W_IP:')) {
+            const ipAddress = rawValue.substring(5).trim();
+            EnhancedLogger.info('BLECommsManager', 'WiFi connected', { ipAddress });
+            if (timeoutId) clearTimeout(timeoutId);
+            if (!completed) {
+              completed = true;
+              resolve(ipAddress);
+            }
+            if (subscription) subscription.remove();
+          } else if (rawValue.includes('ERROR')) {
+            if (timeoutId) clearTimeout(timeoutId);
+            if (!completed) {
+              completed = true;
+              reject(new Error('WiFi connection failed'));
+            }
+            if (subscription) subscription.remove();
+          }
+        }
+      );
+
+      // Send the WiFi credentials command.
+      const command = `WIFI:${ssid},${password}`;
+      await this.device.writeCharacteristicWithResponseForService(
+        SERVICE_UUID,
+        COMMAND_CHAR_UUID,
+        Buffer.from(command).toString('base64')
+      );
+      EnhancedLogger.debug('BLECommsManager', 'WiFi credentials sent');
+    } catch (error) {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (subscription) subscription.remove();
+      EnhancedLogger.error('BLECommsManager', 'WiFi connection error', error as Error);
+      reject(error);
+    }
+  });
+}
+
+
 }
