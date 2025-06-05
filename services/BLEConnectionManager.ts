@@ -6,7 +6,7 @@
  */
 
 import { BleManager, Device } from 'react-native-ble-plx';
-import { EnhancedLogger } from './EnhancedLogger';
+import { EnhancedLogger } from './enhancedLogger';
 
 export class BLEConnectionManager {
   private bleManager: BleManager;
