@@ -3,7 +3,7 @@
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system';
 import { logger } from './logger';
-import { ProcessedImage, GrayscaleResult } from './ImageProcessor';
+import { ProcessedImage, GrayscaleResult } from './imageProcessor';
 import { Buffer } from 'buffer';
 import { decode as decodePNG } from 'fast-png';
 
