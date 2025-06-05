@@ -9,7 +9,7 @@
  */
 
 import { Device, Subscription } from 'react-native-ble-plx';
-import { EnhancedLogger } from './EnhancedLogger';
+import { EnhancedLogger } from './enhancedLogger';
 import { Buffer } from 'buffer'; // Ensure you have the 'buffer' package installed
 
 // Define BLE Service and Characteristic UUIDs for the device.

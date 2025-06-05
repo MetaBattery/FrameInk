@@ -29,7 +29,7 @@ import {
   Chip,
 } from 'react-native-paper';
 import { useFocusEffect } from '@react-navigation/native';
-import { EnhancedLogger } from '../../services/EnhancedLogger';
+import { EnhancedLogger } from '../../services/enhancedLogger';
 import { sharedBLEConnectionManager } from '../../services/BLEConnectionManager';
 import { BLECommsManager, FileInfo as BLEFileInfo } from '../../services/BLECommsManager';
 import { WifiRestApiClient, FileInfo as WiFiFileInfo } from '../../services/WifiRestApiClient';
