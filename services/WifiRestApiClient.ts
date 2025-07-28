@@ -6,7 +6,7 @@
  * and checking storage space.
  */
 
-import { EnhancedLogger } from './EnhancedLogger';
+import { EnhancedLogger } from './enhancedLogger';
 
 // Interface for representing file information from the device
 export interface FileInfo {
