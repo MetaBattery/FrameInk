@@ -1,16 +1,17 @@
 // components/ImageDetailModal.tsx
 import React from 'react';
-import { 
-  View, 
-  StyleSheet, 
-  Modal, 
-  Text, 
-  ScrollView, 
+import {
+  View,
+  StyleSheet,
+  Modal,
+  Text,
+  ScrollView,
   TouchableOpacity,
-  Dimensions
+  Dimensions,
+  Image
 } from 'react-native';
 import { IconButton, Button } from 'react-native-paper';
-import { ProcessedImage } from '../app/(tabs)/library';
+import { ProcessedImage } from '../services/imageProcessor';
 
 interface ImageDetailModalProps {
   image: ProcessedImage | null;
