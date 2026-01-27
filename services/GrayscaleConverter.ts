@@ -1,7 +1,7 @@
 // services/GrayscaleConverter.ts
 
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { logger } from './logger';
 import { ProcessedImage, GrayscaleResult } from './ImageProcessor';
 import { Buffer } from 'buffer';

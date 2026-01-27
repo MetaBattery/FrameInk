@@ -33,6 +33,7 @@ import { EnhancedLogger } from '../../services/EnhancedLogger';
 import { sharedBLEConnectionManager } from '../../services/BLEConnectionManager';
 import { BLECommsManager, FileInfo as BLEFileInfo } from '../../services/BLECommsManager';
 import { WifiRestApiClient, FileInfo as WiFiFileInfo } from '../../services/WifiRestApiClient';
+import { sharedWifiConnectionManager } from '../../services/WifiConnectionManager';
 import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Device } from 'react-native-ble-plx';
 
@@ -71,7 +72,7 @@ export default function FrameManagementScreen() {
   // State for connection and communication managers
   const [connectionManager] = useState(() => sharedBLEConnectionManager);
   const [commsManager, setCommsManager] = useState<BLECommsManager | null>(null);
-  const [apiClient, setApiClient] = useState<WifiRestApiClient | null>(null);
+  // WiFi client is now managed via sharedWifiConnectionManager
   
   // Component state for UI feedback
   const [componentState, setComponentState] = useState<ComponentState>({
@@ -164,7 +165,7 @@ export default function FrameManagementScreen() {
       const checkConnectionAndLoadFiles = async () => {
         if (await connectionManager.isDeviceConnected()) {
           // If we have an active WiFi connection, load files via WiFi
-          if (componentState.wifiConnected && apiClient) {
+          if (componentState.wifiConnected && sharedWifiConnectionManager.isConnected()) {
             loadDeviceFilesWifi();
           } else {
             loadDeviceFiles();
@@ -175,7 +176,7 @@ export default function FrameManagementScreen() {
       return () => {
         // Cleanup if needed
       };
-    }, [componentState.wifiConnected, apiClient])
+    }, [componentState.wifiConnected])
   );
 
   /**
@@ -265,6 +266,7 @@ export default function FrameManagementScreen() {
    * Loads the list of files from the connected device using WiFi REST API.
    */
   const loadDeviceFilesWifi = async () => {
+    const apiClient = sharedWifiConnectionManager.getApiClient();
     if (!apiClient) return;
     try {
       updateState({ isLoading: true, error: null, hasError: false });
@@ -278,18 +280,19 @@ export default function FrameManagementScreen() {
         hasError: true,
         error: `Failed to load files via WiFi: ${(error as Error).message}`,
       });
-      
+
       // If WiFi fails, try to fall back to BLE
       if (commsManager) {
         Alert.alert(
-          'WiFi Connection Lost', 
+          'WiFi Connection Lost',
           'WiFi connection lost. Falling back to Bluetooth.',
           [{ text: 'OK' }]
         );
-        updateState({ 
-          wifiConnected: false, 
-          deviceIp: null, 
-          connectionType: 'ble' 
+        sharedWifiConnectionManager.disconnect();
+        updateState({
+          wifiConnected: false,
+          deviceIp: null,
+          connectionType: 'ble'
         });
         await loadDeviceFiles();
       } else {
@@ -307,7 +310,8 @@ export default function FrameManagementScreen() {
   const handleDeleteFile = async (filename: string) => {
     try {
       updateState({ deletingFile: filename, error: null, hasError: false });
-      
+
+      const apiClient = sharedWifiConnectionManager.getApiClient();
       if (componentState.connectionType === 'wifi' && apiClient) {
         // Delete via WiFi
         await apiClient.deleteFile(filename);
@@ -319,7 +323,7 @@ export default function FrameManagementScreen() {
       } else {
         throw new Error('No active connection for file deletion');
       }
-      
+
       Alert.alert('Success', 'File deleted successfully');
     } catch (error) {
       EnhancedLogger.error('FrameManagement', 'Delete error', error as Error);
@@ -340,7 +344,8 @@ export default function FrameManagementScreen() {
   const handleDisplayImage = async (filename: string) => {
     try {
       updateState({ isLoading: true, error: null, hasError: false });
-      
+
+      const apiClient = sharedWifiConnectionManager.getApiClient();
       if (componentState.connectionType === 'wifi' && apiClient) {
         // Display via WiFi
         await apiClient.displayImage(filename);
@@ -348,7 +353,7 @@ export default function FrameManagementScreen() {
         // Not implemented for BLE yet
         throw new Error('Display function not available via Bluetooth');
       }
-      
+
       Alert.alert('Success', 'Image displayed on device');
     } catch (error) {
       EnhancedLogger.error('FrameManagement', 'Display error', error as Error);
@@ -370,32 +375,31 @@ export default function FrameManagementScreen() {
       Alert.alert('Error', 'BLE connection required for WiFi setup');
       return;
     }
-    
+
     try {
       updateState({ wifiConnecting: true, error: null, hasError: false });
       const ipAddress = await commsManager.connectToWifi(ssid, password);
-      
+
       // Test the API connection with retry logic
       const isApiReachable = await testApiConnection(ipAddress);
-      
+
       if (!isApiReachable) {
         throw new Error('WiFi connected but API is not reachable after multiple attempts');
       }
-      
-      // Now that we know the API is reachable, create the client
-      const client = new WifiRestApiClient(ipAddress);
-      setApiClient(client);
-      
-      updateState({ 
-        wifiConnected: true, 
+
+      // Use the shared WiFi connection manager
+      sharedWifiConnectionManager.connect(ipAddress);
+
+      updateState({
+        wifiConnected: true,
         deviceIp: ipAddress,
         connectionType: 'wifi',
         wifiConnecting: false
       });
-      
+
       // Load files via WiFi API
       await loadDeviceFilesWifi();
-      
+
     } catch (error) {
       EnhancedLogger.error('FrameManagement', 'WiFi connection error', error as Error);
       updateState({
@@ -415,7 +419,7 @@ export default function FrameManagementScreen() {
     try {
       await connectionManager.disconnect();
       setCommsManager(null);
-      setApiClient(null);
+      sharedWifiConnectionManager.disconnect();
       updateState({
         isConnected: false,
         wifiConnected: false,

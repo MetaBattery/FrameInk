@@ -13,7 +13,7 @@ import {
   StyleSheet,
   Dimensions,
 } from 'react-native';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import {
   Card,
   IconButton,
@@ -31,6 +31,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { EnhancedLogger } from '../../services/EnhancedLogger';
 import { sharedBLEConnectionManager } from '../../services/BLEConnectionManager';
 import { BLECommsManager } from '../../services/BLECommsManager';
+import { sharedWifiConnectionManager } from '../../services/WifiConnectionManager';
 
 interface ProcessedImage {
   filename: string;
@@ -224,6 +225,31 @@ export default function LibraryScreen() {
 
   const handleSendToFrame = async (image: ProcessedImage) => {
     try {
+      // Check if WiFi is available (faster transfer)
+      const wifiClient = sharedWifiConnectionManager.getApiClient();
+      const useWifi = wifiClient && sharedWifiConnectionManager.isConnected();
+
+      if (useWifi) {
+        EnhancedLogger.debug('Library', 'Using WiFi for file transfer', { filename: image.filename });
+        setIsTransferring(true);
+
+        // Use uploadFileFromUri directly since file is already on disk
+        await wifiClient.uploadFileFromUri(image.path, image.filename, (progress) => {
+          // Convert WiFi progress (0-1) to the expected format
+          setTransferProgress({
+            bytesTransferred: Math.round(progress * image.fileSize),
+            totalBytes: image.fileSize,
+          });
+        });
+
+        Alert.alert('Success', 'Image sent to frame via WiFi!');
+        setDetailModalVisible(false);
+        return;
+      }
+
+      // Fall back to BLE transfer
+      EnhancedLogger.debug('Library', 'Using BLE for file transfer', { filename: image.filename });
+
       // Use the commsManager (shared from the connection) if available.
       let manager = commsManager;
       if (!manager) {
@@ -246,7 +272,11 @@ export default function LibraryScreen() {
       });
       const buffer = new Uint8Array(Buffer.from(fileContent, 'base64')).buffer;
       await manager.transferFile(image.filename, buffer, (progress) => {
-        setTransferProgress(progress);
+        // BLE progress is 0-1, convert to expected format
+        setTransferProgress({
+          bytesTransferred: Math.round(progress * buffer.byteLength),
+          totalBytes: buffer.byteLength,
+        });
       });
       Alert.alert('Success', 'Image sent to frame successfully!');
       setDetailModalVisible(false);

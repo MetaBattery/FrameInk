@@ -8,7 +8,7 @@
  * It uses the react-native-ble-plx library for BLE operations.
  */
 
-import { Device, Subscription } from 'react-native-ble-plx';
+import { Device, Subscription } from '@sfourdrinier/react-native-ble-plx';
 import { EnhancedLogger } from './EnhancedLogger';
 import { Buffer } from 'buffer'; // Ensure you have the 'buffer' package installed
 

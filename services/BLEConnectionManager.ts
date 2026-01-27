@@ -5,7 +5,7 @@
  * connecting, and disconnecting BLE devices. It uses the react-native-ble-plx library.
  */
 
-import { BleManager, Device } from 'react-native-ble-plx';
+import { BleManager, Device } from '@sfourdrinier/react-native-ble-plx';
 import { EnhancedLogger } from './EnhancedLogger';
 
 export class BLEConnectionManager {

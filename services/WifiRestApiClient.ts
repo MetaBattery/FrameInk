@@ -1,12 +1,14 @@
 /**
  * services/WifiRestApiClient.ts
- * 
+ *
  * This file contains the WifiRestApiClient class which handles communication with the device
  * over WiFi REST API for file operations such as listing files, transferring files, deleting files,
  * and checking storage space.
  */
 
 import { EnhancedLogger } from './EnhancedLogger';
+import * as FileSystem from 'expo-file-system/legacy';
+import { Buffer } from 'buffer';
 
 // Interface for representing file information from the device
 export interface FileInfo {
@@ -47,21 +49,80 @@ export class WifiRestApiClient {
   }
 
   /**
-   * Uploads a file to the device.
+   * Uploads a file to the device from an ArrayBuffer.
    * @param filename The name of the file to create on the device.
    * @param data The file data as an ArrayBuffer.
    * @param onProgress Optional callback to report transfer progress.
    */
   async uploadFile(
-    filename: string, 
-    data: ArrayBuffer, 
+    filename: string,
+    data: ArrayBuffer,
     onProgress?: (progress: number) => void
   ): Promise<void> {
-    EnhancedLogger.debug('WifiRestApiClient', 'Uploading file', { filename, size: data.byteLength });
+    EnhancedLogger.debug('WifiRestApiClient', 'Uploading file from ArrayBuffer', { filename, size: data.byteLength });
+
     try {
+      // Convert ArrayBuffer to base64 and write to a temp file
+      // React Native's FormData requires a file URI, not a Blob
+      const base64Data = Buffer.from(data).toString('base64');
+      const tempPath = `${FileSystem.cacheDirectory}upload_temp_${Date.now()}_${filename}`;
+
+      await FileSystem.writeAsStringAsync(tempPath, base64Data, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+
+      EnhancedLogger.debug('WifiRestApiClient', 'Temp file created', { tempPath });
+
+      try {
+        // Use the URI-based upload
+        await this.uploadFileFromUri(tempPath, filename, onProgress);
+      } finally {
+        // Clean up temp file
+        try {
+          await FileSystem.deleteAsync(tempPath, { idempotent: true });
+        } catch (cleanupError) {
+          EnhancedLogger.debug('WifiRestApiClient', 'Temp file cleanup failed (non-critical)', cleanupError);
+        }
+      }
+    } catch (error) {
+      EnhancedLogger.error('WifiRestApiClient', 'Upload file error', error as Error);
+      throw error;
+    }
+  }
+
+  /**
+   * Uploads a file to the device from a local file URI.
+   * This is the preferred method when the file already exists on disk.
+   * @param fileUri The local file URI (e.g., from expo-file-system).
+   * @param filename The name of the file to create on the device.
+   * @param onProgress Optional callback to report transfer progress.
+   */
+  async uploadFileFromUri(
+    fileUri: string,
+    filename: string,
+    onProgress?: (progress: number) => void
+  ): Promise<void> {
+    EnhancedLogger.debug('WifiRestApiClient', 'Uploading file from URI', { fileUri, filename });
+
+    try {
+      // Get file info to know the size for progress tracking
+      const fileInfo = await FileSystem.getInfoAsync(fileUri);
+      if (!fileInfo.exists) {
+        throw new Error(`File not found: ${fileUri}`);
+      }
+
+      const fileSize = fileInfo.size || 0;
+      EnhancedLogger.debug('WifiRestApiClient', 'File info', { size: fileSize });
+
+      // Create FormData with React Native compatible format
       const formData = new FormData();
-      const blob = new Blob([data]);
-      formData.append('file', blob, filename);
+
+      // React Native FormData expects this specific object format for files
+      formData.append('file', {
+        uri: fileUri,
+        type: 'application/octet-stream',
+        name: filename,
+      } as any);
 
       // Use XMLHttpRequest for progress monitoring
       return new Promise((resolve, reject) => {
@@ -70,17 +131,28 @@ export class WifiRestApiClient {
 
         xhr.upload.onprogress = (e) => {
           if (e.lengthComputable && onProgress) {
-            onProgress(e.loaded / e.total);
+            const progress = e.loaded / e.total;
+            EnhancedLogger.debug('WifiRestApiClient', 'Upload progress', {
+              loaded: e.loaded,
+              total: e.total,
+              percent: Math.round(progress * 100),
+            });
+            onProgress(progress);
           }
         };
 
         xhr.onload = () => {
+          EnhancedLogger.debug('WifiRestApiClient', 'XHR onload', {
+            status: xhr.status,
+            response: xhr.responseText,
+          });
+
           if (xhr.status >= 200 && xhr.status < 300) {
-            EnhancedLogger.info('WifiRestApiClient', 'File uploaded', { filename, size: data.byteLength });
+            EnhancedLogger.info('WifiRestApiClient', 'File uploaded successfully', { filename, size: fileSize });
             resolve();
           } else {
-            const error = new Error(`HTTP error! Status: ${xhr.status}`);
-            EnhancedLogger.error('WifiRestApiClient', 'Upload error', error);
+            const error = new Error(`HTTP error! Status: ${xhr.status}, Response: ${xhr.responseText}`);
+            EnhancedLogger.error('WifiRestApiClient', 'Upload HTTP error', error);
             reject(error);
           }
         };
@@ -91,10 +163,19 @@ export class WifiRestApiClient {
           reject(error);
         };
 
+        xhr.ontimeout = () => {
+          const error = new Error('Upload request timed out');
+          EnhancedLogger.error('WifiRestApiClient', 'Upload timeout', error);
+          reject(error);
+        };
+
+        // Set a generous timeout for large files (5 minutes)
+        xhr.timeout = 300000;
+
         xhr.send(formData);
       });
     } catch (error) {
-      EnhancedLogger.error('WifiRestApiClient', 'Upload file error', error as Error);
+      EnhancedLogger.error('WifiRestApiClient', 'Upload file from URI error', error as Error);
       throw error;
     }
   }
@@ -172,14 +253,12 @@ export class WifiRestApiClient {
       EnhancedLogger.debug('WifiRestApiClient', `Fetching from ${this.baseUrl}/api/storage`);
       
       // Create a fetch request with additional options
-      const response = await fetch(`${this.baseUrl}/api/storage`, { 
+      const response = await fetch(`${this.baseUrl}/api/storage`, {
         signal: controller.signal,
         headers: {
           'Accept': 'application/json',
           'Cache-Control': 'no-cache'
         },
-        // Longer timeout for debugging
-        timeout: timeout 
       });
       
       clearTimeout(timeoutId);
@@ -201,3 +280,4 @@ export class WifiRestApiClient {
       return false;
     }
   }
+}

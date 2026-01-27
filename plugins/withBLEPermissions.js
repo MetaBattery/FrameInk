@@ -1,5 +1,5 @@
 // plugins/withBLEPermissions.js
-const { withAndroidManifest, withAppBuildGradle, withInfoPlist } = require('@expo/config-plugins');
+const { withAndroidManifest, withAppBuildGradle, withInfoPlist } = require('expo/config-plugins');
 
 // Constants
 const BLE_PERMISSIONS = [

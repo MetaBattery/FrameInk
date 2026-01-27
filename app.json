@@ -45,8 +45,7 @@
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.WRITE_EXTERNAL_STORAGE",
         "android.permission.RECORD_AUDIO"
-      ],
-      "usesCleartextTraffic": true
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -62,11 +61,9 @@
           "cameraPermission": "The app needs access to your camera to capture photos for e-ink display."
         }
       ],
-      [
-        "./plugins/withBLEPermissions",
-        {}
-      ],
-      "react-native-ble-plx"
+      "@sfourdrinier/react-native-ble-plx",
+      "expo-font",
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true

@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc:*)",
+      "WebFetch(domain:expo.dev)",
+      "Bash(npx expo-doctor)",
+      "Bash(npx expo install:*)"
+    ]
+  }
+}
