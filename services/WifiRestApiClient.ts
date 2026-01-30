@@ -7,7 +7,8 @@
  */
 
 import { EnhancedLogger } from './EnhancedLogger';
-import * as FileSystem from 'expo-file-system/legacy';
+import { File, Paths } from 'expo-file-system';
+import * as LegacyFileSystem from 'expo-file-system/legacy';
 import { Buffer } from 'buffer';
 
 // Interface for representing file information from the device
@@ -65,21 +66,22 @@ export class WifiRestApiClient {
       // Convert ArrayBuffer to base64 and write to a temp file
       // React Native's FormData requires a file URI, not a Blob
       const base64Data = Buffer.from(data).toString('base64');
-      const tempPath = `${FileSystem.cacheDirectory}upload_temp_${Date.now()}_${filename}`;
+      const tempFile = new File(Paths.cache, `upload_temp_${Date.now()}_${filename}`);
 
-      await FileSystem.writeAsStringAsync(tempPath, base64Data, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
+      tempFile.create();
+      tempFile.write(base64Data, { encoding: 'base64' });
 
-      EnhancedLogger.debug('WifiRestApiClient', 'Temp file created', { tempPath });
+      EnhancedLogger.debug('WifiRestApiClient', 'Temp file created', { tempPath: tempFile.uri });
 
       try {
         // Use the URI-based upload
-        await this.uploadFileFromUri(tempPath, filename, onProgress);
+        await this.uploadFileFromUri(tempFile.uri, filename, onProgress);
       } finally {
         // Clean up temp file
         try {
-          await FileSystem.deleteAsync(tempPath, { idempotent: true });
+          if (tempFile.exists) {
+            tempFile.delete();
+          }
         } catch (cleanupError) {
           EnhancedLogger.debug('WifiRestApiClient', 'Temp file cleanup failed (non-critical)', cleanupError);
         }
@@ -105,38 +107,73 @@ export class WifiRestApiClient {
     EnhancedLogger.debug('WifiRestApiClient', 'Uploading file from URI', { fileUri, filename });
 
     try {
-      // Get file info to know the size for progress tracking
-      const fileInfo = await FileSystem.getInfoAsync(fileUri);
-      if (!fileInfo.exists) {
-        throw new Error(`File not found: ${fileUri}`);
+      // Read file as base64 using legacy API to ensure proper binary reading
+      const base64Content = await LegacyFileSystem.readAsStringAsync(fileUri, {
+        encoding: LegacyFileSystem.EncodingType.Base64,
+      });
+
+      // Decode base64 to get raw bytes
+      const binaryString = atob(base64Content);
+      const fileBytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        fileBytes[i] = binaryString.charCodeAt(i);
       }
 
-      const fileSize = fileInfo.size || 0;
+      const fileSize = fileBytes.length;
       EnhancedLogger.debug('WifiRestApiClient', 'File info', { size: fileSize });
 
-      // Create FormData with React Native compatible format
-      const formData = new FormData();
+      // Log first few bytes to verify no CRLF
+      const headerHex = Array.from(fileBytes.slice(0, 8))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join(' ');
+      EnhancedLogger.debug('WifiRestApiClient', 'File header bytes', { hex: headerHex });
 
-      // React Native FormData expects this specific object format for files
-      formData.append('file', {
-        uri: fileUri,
-        type: 'application/octet-stream',
-        name: filename,
-      } as any);
+      // Manually construct multipart body to avoid React Native's FormData issues
+      const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2);
 
-      // Use XMLHttpRequest for progress monitoring
+      // Build multipart header
+      const headerStr =
+        `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
+        `Content-Type: application/octet-stream\r\n\r\n`;
+
+      // Build multipart footer
+      const footerStr = `\r\n--${boundary}--\r\n`;
+
+      // Convert strings to bytes
+      const headerBytes = new Uint8Array(headerStr.length);
+      for (let i = 0; i < headerStr.length; i++) {
+        headerBytes[i] = headerStr.charCodeAt(i);
+      }
+
+      const footerBytes = new Uint8Array(footerStr.length);
+      for (let i = 0; i < footerStr.length; i++) {
+        footerBytes[i] = footerStr.charCodeAt(i);
+      }
+
+      // Combine into single array: header + file content + footer
+      const bodyLength = headerBytes.length + fileBytes.length + footerBytes.length;
+      const body = new Uint8Array(bodyLength);
+      body.set(headerBytes, 0);
+      body.set(fileBytes, headerBytes.length);
+      body.set(footerBytes, headerBytes.length + fileBytes.length);
+
+      EnhancedLogger.debug('WifiRestApiClient', 'Multipart body constructed', {
+        totalSize: bodyLength,
+        headerSize: headerBytes.length,
+        fileSize: fileBytes.length,
+        footerSize: footerBytes.length
+      });
+
+      // Use XMLHttpRequest with ArrayBuffer body
       return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open('POST', `${this.baseUrl}/api/upload`, true);
+        xhr.setRequestHeader('Content-Type', `multipart/form-data; boundary=${boundary}`);
 
         xhr.upload.onprogress = (e) => {
           if (e.lengthComputable && onProgress) {
             const progress = e.loaded / e.total;
-            EnhancedLogger.debug('WifiRestApiClient', 'Upload progress', {
-              loaded: e.loaded,
-              total: e.total,
-              percent: Math.round(progress * 100),
-            });
             onProgress(progress);
           }
         };
@@ -169,10 +206,8 @@ export class WifiRestApiClient {
           reject(error);
         };
 
-        // Set a generous timeout for large files (5 minutes)
         xhr.timeout = 300000;
-
-        xhr.send(formData);
+        xhr.send(body.buffer);
       });
     } catch (error) {
       EnhancedLogger.error('WifiRestApiClient', 'Upload file from URI error', error as Error);

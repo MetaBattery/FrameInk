@@ -35,7 +35,7 @@ import { BLECommsManager, FileInfo as BLEFileInfo } from '../../services/BLEComm
 import { WifiRestApiClient, FileInfo as WiFiFileInfo } from '../../services/WifiRestApiClient';
 import { sharedWifiConnectionManager } from '../../services/WifiConnectionManager';
 import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { Device } from 'react-native-ble-plx';
+import { Device } from '@sfourdrinier/react-native-ble-plx';
 
 // Type alias to ensure both file info types are compatible
 type FileInfo = BLEFileInfo | WiFiFileInfo;

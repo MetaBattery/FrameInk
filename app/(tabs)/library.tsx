@@ -13,7 +13,7 @@ import {
   StyleSheet,
   Dimensions,
 } from 'react-native';
-import * as FileSystem from 'expo-file-system/legacy';
+import { File, Directory, Paths } from 'expo-file-system';
 import {
   Card,
   IconButton,
@@ -116,37 +116,37 @@ export default function LibraryScreen() {
   const loadProcessedImages = async () => {
     try {
       setLoading(true);
-      const directory = `${FileSystem.documentDirectory}processed_images/`;
-      const dirInfo = await FileSystem.getInfoAsync(directory);
-      if (!dirInfo.exists) {
+      const processedDir = new Directory(Paths.document, 'processed_images');
+      if (!processedDir.exists) {
         setImages([]);
         return;
       }
-      const files = await FileSystem.readDirectoryAsync(directory);
+      const contents = processedDir.list();
       // Filter for .bin files—the new processed image format.
-      const processedFiles = files.filter((file) => file.endsWith('.bin'));
+      const processedFiles = contents
+        .filter((item): item is File => item instanceof File && item.name.endsWith('.bin'));
       const processedImages: ProcessedImage[] = [];
 
       for (const file of processedFiles) {
-        const path = `${directory}${file}`;
+        const path = file.uri;
         // Derive preview URI from the file name:
         // e.g., frameink_portrait_1738396854591.bin  -> frameink_portrait_1738396854591_preview.jpg
-        const previewUri = `${directory}${file.replace('.bin', '_preview.jpg')}`;
+        const previewUri = `${processedDir.uri}/${file.name.replace('.bin', '_preview.jpg')}`;
 
         // Extract timestamp from the filename (assuming a pattern like _<timestamp>.bin)
-        const timestampMatch = file.match(/_(\d+)\.bin$/);
+        const timestampMatch = file.name.match(/_(\d+)\.bin$/);
         const timestamp = timestampMatch ? parseInt(timestampMatch[1], 10) : Date.now();
 
         // Get dimensions from the preview image
         const dimensions = await getImageDimensions(previewUri);
-        const fileInfo = await FileSystem.getInfoAsync(path);
+        const fileSize = file.size || 0;
 
         processedImages.push({
-          filename: file,
+          filename: file.name,
           path,
           timestamp,
           dimensions: { width: dimensions.width, height: dimensions.height },
-          fileSize: fileInfo.size || 0,
+          fileSize,
           previewUri,
         });
       }
@@ -183,21 +183,17 @@ export default function LibraryScreen() {
   const handleRename = async (newName: string) => {
     if (!selectedImage || !newName.trim()) return;
     try {
-      const directory = `${FileSystem.documentDirectory}processed_images/`;
+      const processedDir = new Directory(Paths.document, 'processed_images');
       // Preserve the .bin extension.
-      const newPath = `${directory}${newName}.bin`;
+      const newPath = `${processedDir.uri}/${newName}.bin`;
 
-      await FileSystem.moveAsync({
-        from: selectedImage.path,
-        to: newPath,
-      });
+      const sourceFile = new File(selectedImage.path);
+      sourceFile.move(new File(newPath));
 
       if (selectedImage.previewUri) {
         const newPreviewPath = newPath.replace('.bin', '_preview.jpg');
-        await FileSystem.moveAsync({
-          from: selectedImage.previewUri,
-          to: newPreviewPath,
-        });
+        const previewFile = new File(selectedImage.previewUri);
+        previewFile.move(new File(newPreviewPath));
       }
 
       setImages((prevImages) =>
@@ -267,9 +263,8 @@ export default function LibraryScreen() {
         }
       }
       setIsTransferring(true);
-      const fileContent = await FileSystem.readAsStringAsync(image.path, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
+      const imageFile = new File(image.path);
+      const fileContent = await imageFile.base64();
       const buffer = new Uint8Array(Buffer.from(fileContent, 'base64')).buffer;
       await manager.transferFile(image.filename, buffer, (progress) => {
         // BLE progress is 0-1, convert to expected format
@@ -291,11 +286,17 @@ export default function LibraryScreen() {
 
   const handleDeleteImage = async (image: ProcessedImage) => {
     try {
-      await FileSystem.deleteAsync(image.path);
+      const imageFile = new File(image.path);
+      imageFile.delete();
       if (image.previewUri) {
-        await FileSystem.deleteAsync(image.previewUri).catch(() => {
+        try {
+          const previewFile = new File(image.previewUri);
+          if (previewFile.exists) {
+            previewFile.delete();
+          }
+        } catch {
           // Ignore error if preview doesn't exist
-        });
+        }
       }
       setImages(images.filter((img) => img.path !== image.path));
       setDetailModalVisible(false);
@@ -414,42 +415,8 @@ export default function LibraryScreen() {
     </Modal>
   );
 
-  const renderRenameDialog = () => (
-    <Portal>
-      <Dialog
-        visible={renameDialogVisible}
-        onDismiss={() => {
-          setRenameDialogVisible(false);
-          setNewFileName('');
-        }}
-        style={styles.modalContent}
-      >
-        <Dialog.Title style={styles.modalTitle}>Rename Image</Dialog.Title>
-        <Dialog.Content>
-          <TextInput
-            value={newFileName}
-            onChangeText={setNewFileName}
-            mode="outlined"
-            style={styles.input}
-          />
-        </Dialog.Content>
-        <Dialog.Actions style={styles.modalButtons}>
-          <Button
-            onPress={() => {
-              setRenameDialogVisible(false);
-              setNewFileName('');
-            }}
-            style={styles.modalButton}
-          >
-            Cancel
-          </Button>
-          <Button onPress={() => handleRename(newFileName)} style={styles.modalButton}>
-            Rename
-          </Button>
-        </Dialog.Actions>
-      </Dialog>
-    </Portal>
-  );
+  // Rename dialog is inlined in JSX to prevent re-creation on state change
+  // which would cause keyboard dismissal on each keystroke
 
   const renderItem = ({ item }: { item: ProcessedImage }) => (
     <Card style={[styles.surface, styles.card]}>
@@ -573,7 +540,41 @@ export default function LibraryScreen() {
         />
       )}
       {renderImageDetail()}
-      {renderRenameDialog()}
+      <Portal>
+        <Dialog
+          visible={renameDialogVisible}
+          onDismiss={() => {
+            setRenameDialogVisible(false);
+            setNewFileName('');
+          }}
+          style={styles.modalContent}
+        >
+          <Dialog.Title style={styles.modalTitle}>Rename Image</Dialog.Title>
+          <Dialog.Content>
+            <TextInput
+              value={newFileName}
+              onChangeText={setNewFileName}
+              mode="outlined"
+              style={styles.input}
+              autoFocus={renameDialogVisible}
+            />
+          </Dialog.Content>
+          <Dialog.Actions style={styles.modalButtons}>
+            <Button
+              onPress={() => {
+                setRenameDialogVisible(false);
+                setNewFileName('');
+              }}
+              style={styles.modalButton}
+            >
+              Cancel
+            </Button>
+            <Button onPress={() => handleRename(newFileName)} style={styles.modalButton}>
+              Rename
+            </Button>
+          </Dialog.Actions>
+        </Dialog>
+      </Portal>
     </View>
   );
 }

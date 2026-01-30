@@ -4,7 +4,8 @@
       "Bash(npx tsc:*)",
       "WebFetch(domain:expo.dev)",
       "Bash(npx expo-doctor)",
-      "Bash(npx expo install:*)"
+      "Bash(npx expo install:*)",
+      "Bash(xxd:*)"
     ]
   }
 }

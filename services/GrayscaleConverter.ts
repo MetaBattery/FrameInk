@@ -1,11 +1,11 @@
 // services/GrayscaleConverter.ts
 
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
-import * as FileSystem from 'expo-file-system/legacy';
+import { File } from 'expo-file-system';
 import { logger } from './logger';
-import { ProcessedImage, GrayscaleResult } from './ImageProcessor';
+import { ProcessedImage, GrayscaleResult } from './imageProcessor';
 import { Buffer } from 'buffer';
-import { decode as decodePNG } from 'fast-png';
+import UPNG from 'upng-js';
 
 export class GrayscaleConverter {
   static async convert(processedImage: ProcessedImage): Promise<GrayscaleResult> {
@@ -17,22 +17,26 @@ export class GrayscaleConverter {
       });
 
       // Read image file as base64
-      const base64 = await FileSystem.readAsStringAsync(processedImage.uri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
+      const imageFile = new File(processedImage.uri);
+      const base64 = await imageFile.base64();
 
-      // Convert base64 to Uint8Array
+      // Convert base64 to ArrayBuffer
       const binaryData = Buffer.from(base64, 'base64');
+      const arrayBuffer = binaryData.buffer.slice(
+        binaryData.byteOffset,
+        binaryData.byteOffset + binaryData.byteLength
+      );
 
-      // Decode PNG image
-      const pngData = decodePNG(binaryData);
+      // Decode PNG image using UPNG
+      const pngData = UPNG.decode(arrayBuffer);
 
-      if (!pngData || !pngData.data) {
+      if (!pngData || !pngData.width || !pngData.height) {
         throw new Error('Failed to decode PNG image');
       }
 
-      // Extract pixel data
-      const pixelData = pngData.data; // Uint8Array containing RGBA values
+      // Convert to RGBA8 format (returns array of frame buffers, we need first frame)
+      const rgbaFrames = UPNG.toRGBA8(pngData);
+      const pixelData = new Uint8Array(rgbaFrames[0]); // First frame RGBA data
 
       // Convert to grayscale
       const grayscaleData = new Uint8Array(pngData.width * pngData.height);
@@ -64,7 +68,7 @@ export class GrayscaleConverter {
           processedImage.height
         );
       } catch (previewError) {
-        logger.warn(
+        logger.debug(
           'GrayscaleConverter',
           'Failed to generate preview, using original image',
           previewError
